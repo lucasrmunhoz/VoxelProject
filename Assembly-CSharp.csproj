@@ -78,6 +78,7 @@
     <Compile Include="Assets/_Scripts/Room/RoomStateManager.cs" />
     <Compile Include="Assets/_Scripts/Props/DoorAnchorInfo.cs" />
     <Compile Include="Assets/_Scripts/VoxelSystem/CompositeVoxel.cs" />
+    <Compile Include="Assets/_Scripts/VoxelSystem/VoxelPool.cs" />
     <Compile Include="Assets/_Scripts/Props/InteractableButton.cs" />
     <Compile Include="Assets/_Scripts/Room/BedroomGenerator.cs" />
     <Compile Include="Assets/_Scripts/VoxelSystem/BaseVoxel.cs" />
