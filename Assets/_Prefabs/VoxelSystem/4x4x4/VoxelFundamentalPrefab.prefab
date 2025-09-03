@@ -1,0 +1,115 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &1559643468788379389
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 5028733055841979342}
+  - component: {fileID: 1555122268515383167}
+  - component: {fileID: 3880255692226372912}
+  - component: {fileID: -3874568150632175066}
+  - component: {fileID: -2377721114600776984}
+  m_Layer: 0
+  m_Name: VoxelFundamentalPrefab
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &5028733055841979342
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1559643468788379389}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 1004.6386, y: 3.6055586, z: 987.51984}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1555122268515383167
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1559643468788379389}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 92e81ceb08e104ab4af9233735bcc069, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  generationMode: 0
+  topFaceGroup: {fileID: 0}
+  bottomFaceGroup: {fileID: 0}
+  northFaceGroup: {fileID: 0}
+  southFaceGroup: {fileID: 0}
+  eastFaceGroup: {fileID: 0}
+  westFaceGroup: {fileID: 0}
+  microVoxelPrefab: {fileID: 7301510937688262514, guid: 11e3ac644534382cabf98bcc4257564c, type: 3}
+  microGridResolution: 4
+  microVoxelLocalSize: 0.25
+  generateGradually: 1
+  generationPerFrame: 64
+  appearAnimationDuration: 0.12
+  prewarmPoolPerFace: 0
+  verboseDebug: 1
+--- !u!65 &3880255692226372912
+BoxCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1559643468788379389}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 3
+  m_Size: {x: 1, y: 1, z: 1}
+  m_Center: {x: 0, y: 0, z: 0}
+--- !u!114 &-3874568150632175066
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1559643468788379389}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5994a282eee3373468163a1015e49077, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  OriginalPrefab: {fileID: 1559643468788379389}
+--- !u!114 &-2377721114600776984
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1559643468788379389}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 926d78a76411f60f18e02fa9f5de6308, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  autoInitializeOnAwake: 1
+  includeChildRenderers: 1
+  includeChildColliders: 1
+  cacheOptionalVoxelComponents: 1
+  resetTransformOnSpawn: 0
