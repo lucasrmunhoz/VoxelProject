@@ -74,6 +74,7 @@
     <Compile Include="Assets/_Scripts/VoxelSystem/PoolableObject.cs" />
     <Compile Include="Assets/_Scripts/Player/InteractionTrigger.cs" />
     <Compile Include="Assets/_Scripts/VoxelSystem/VoxelFaceContoller.cs" />
+    <Compile Include="Assets/_Scripts/Room/GameSignals.cs" />
     <Compile Include="Assets/_Scripts/Room/RoomStateManager.cs" />
     <Compile Include="Assets/_Scripts/Props/DoorAnchorInfo.cs" />
     <Compile Include="Assets/_Scripts/VoxelSystem/CompositeVoxel.cs" />
