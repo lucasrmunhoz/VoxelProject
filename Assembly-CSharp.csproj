@@ -69,6 +69,7 @@
     <Compile Include="Assets/_Scripts/Room/SimpleRoomGenerator.cs" />
     <Compile Include="Assets/_Scripts/VoxelSystem/SimpleVoxel.cs" />
     <Compile Include="Assets/_Scripts/Player/IInteractable.cs" />
+    <Compile Include="Assets/_Scripts/Room/RoomsData.cs" />
     <Compile Include="Assets/_Scripts/Player/FlashlightConeGenerator.cs" />
     <Compile Include="Assets/_Scripts/VoxelSystem/PoolableObject.cs" />
     <Compile Include="Assets/_Scripts/Player/InteractionTrigger.cs" />
