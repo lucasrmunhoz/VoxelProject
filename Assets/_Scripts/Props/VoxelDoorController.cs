@@ -153,9 +153,6 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
         }
     }
 
-    // =======================================================================
-    // INÍCIO DA ALTERAÇÃO SUGERIDA
-    // =======================================================================
     /// <summary>
     /// Define os clipes de áudio programaticamente. Ideal para ser chamado pelo BaseRoomGenerator
     /// após adicionar este componente, evitando o uso de Reflection.
@@ -166,9 +163,6 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
         this._closeSound = close;
         this._lockedSound = locked;
     }
-    // =======================================================================
-    // FIM DA ALTERAÇÃO SUGERIDA
-    // =======================================================================
 
     /// <summary>
     /// Opens the door (voxels disappear with rotation+shrink animation).
@@ -213,19 +207,32 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
     #endregion
 
     #region IInteractable
-    public string InteractionPrompt => _isLocked ? "Trancada" : (_isOpen ? "Fechar Porta" : "Abrir Porta");
-
-    public bool Interact(GameObject interactor)
+    // === INÍCIO DO BUGFIX APLICADO ===
+    // A implementação de IInteractable foi atualizada para corresponder à nova API,
+    // mantendo a lógica original do script.
+    
+    // Lógica da propriedade 'InteractionPrompt' movida para a nova 'Prompt', mantendo o texto dinâmico.
+    public string Prompt => _isLocked ? "Trancada" : (_isOpen ? "Fechar Porta" : "Abrir Porta");
+    
+    // Nova função 'CanInteract' adicionada conforme a especificação.
+    public bool CanInteract(Transform interactor)
     {
-        if (_isAnimating) return false;
+        return isActiveAndEnabled && interactor != null;
+    }
+
+    // Lógica da antiga função 'Interact(GameObject)' movida para a nova 'Interact(Transform)'.
+    public void Interact(Transform interactor)
+    {
+        if (_isAnimating) return;
         if (_isLocked)
         {
             if (_audio != null && _lockedSound != null) _audio.PlayOneShot(_lockedSound);
-            return false;
+            return;
         }
         SetOpen(!_isOpen);
-        return true;
     }
+    
+    // === FIM DO BUGFIX APLICADO ===
 
     public void OnFocusEnter()
     {
