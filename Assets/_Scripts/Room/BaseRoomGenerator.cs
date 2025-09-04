@@ -88,6 +88,7 @@ public class BaseRoomGenerator : MonoBehaviour
 
         public List<GameObject> spawnedVoxels = new List<GameObject>();
         public List<GameObject> spawnedProps = new List<GameObject>();
+        public List<Transform> doorRoots = new List<Transform>();
 
         public Transform entryAnchor;
         public Transform exitAnchor;
@@ -98,6 +99,13 @@ public class BaseRoomGenerator : MonoBehaviour
         public bool IsPopulated = false;
 
         public List<DoorRect> doorRects = new List<DoorRect>();
+
+        // RoomsData.cs (RoomInstance) — ADD
+        [Tooltip("Gerador que construiu esta sala (para utilidades de streaming).")]
+        public BaseRoomGenerator builder;
+
+        [Tooltip("Tamanho mundial de 1 voxel usado nesta sala.")]
+        public float voxelSize = 1f;
     }
 
     public enum WallSide { North = 0, South = 1, East = 2, West = 3 }
@@ -292,6 +300,10 @@ public class BaseRoomGenerator : MonoBehaviour
 
         // interruptor
         PlaceSwitch(room);
+        
+        // NEW: registrar quem construiu e o voxelSize usado
+        room.builder   = this;
+        room.voxelSize = this.voxelSize;
 
         room.IsPopulated = true;
         try { OnRoomPopulated?.Invoke(room); } catch { }
@@ -340,6 +352,10 @@ public class BaseRoomGenerator : MonoBehaviour
 
         // interruptor
         PlaceSwitch(room);
+
+        // NEW: registrar quem construiu e o voxelSize usado
+        room.builder   = this;
+        room.voxelSize = this.voxelSize;
 
         room.IsPopulated = true;
         try { OnRoomPopulated?.Invoke(room); } catch { }
@@ -405,6 +421,9 @@ public class BaseRoomGenerator : MonoBehaviour
                 doorGO.transform.SetParent(room.container, false); // localPosition = (0,0,0) -> relativo ao room.container
                 doorGO.transform.localRotation = Quaternion.identity;
                 doorGO.transform.localPosition = Vector3.zero;
+                
+                // Registra o root da porta para uso futuro (streaming)
+                room.doorRoots.Add(doorGO.transform);
 
                 var createdVoxels = new List<GameObject>();
 
@@ -552,6 +571,9 @@ public class BaseRoomGenerator : MonoBehaviour
         doorGO.transform.SetParent(roomContainer, true);
         doorGO.transform.position = anchor.position;
         doorGO.transform.rotation = anchor.rotation;
+        
+        // Registra o root da porta para uso futuro (streaming)
+        roomInstance.doorRoots.Add(doorGO.transform);
 
         // =======================================================================
         // INÍCIO DO BLOCO ALTERADO
@@ -614,11 +636,13 @@ public class BaseRoomGenerator : MonoBehaviour
                 roomInstance.spawnedVoxels.Add(cube);
             }
         }
+        
+        var rect = new DoorRect { side = sideFromAnchor, start = 0, width = door_width, height = door_height };
+        roomInstance.doorRects.Add(rect);
 
         if (createdVoxels.Count > 0)
         {
             // --- INTEGRAÇÃO DO SEU SNIPPET TAMBÉM NO HUB ---
-            var rect = new DoorRect { side = sideFromAnchor, start = 0, width = door_width, height = door_height };
             EnsureDoorController(doorGO.transform, rect);
 
             // Opcional: áudio
@@ -968,6 +992,49 @@ public class BaseRoomGenerator : MonoBehaviour
 
         // Revarre filhos (blocos gerados programaticamente)
         try { ctrl.InitializeFromChildren(); } catch { /* compat */ }
+    }
+    #endregion
+
+    #region Streaming Helpers
+    /// <summary>
+    /// Ativa ou desativa os VoxelDoorControllers de uma sala. Deve ser chamado
+    /// pelo GameFlowManager quando a sala entra ou sai do raio de streaming.
+    /// </summary>
+    /// <param name="inst">A instância da sala a ser modificada.</param>
+    /// <param name="active">True para ativar os controllers, false para desativar.</param>
+    public void SetDoorControllersStreamingState(RoomInstance inst, bool active)
+    {
+        if (inst == null) return;
+    
+        // Garante que as listas tenham o mesmo tamanho para evitar erros de índice.
+        int doorCount = Mathf.Min(inst.doorRoots.Count, inst.doorRects.Count);
+    
+        for (int i = 0; i < doorCount; i++)
+        {
+            ToggleDoorController(inst.doorRoots[i], inst.doorRects[i], active, inst.voxelSize);
+        }
+    }
+    
+    private void ToggleDoorController(Transform doorRoot, DoorRect rect, bool active, float vs)
+    {
+        if (!doorRoot) return;
+    
+        var ctrl = doorRoot.GetComponent<VoxelDoorController>();
+        if (active)
+        {
+            if (!ctrl) ctrl = doorRoot.gameObject.AddComponent<VoxelDoorController>();
+            
+            // Reconfigura para garantir o estado correto ao reativar, conforme snippet.
+            try { ctrl.Setup(rect.side, vs); } catch { /* compat */ }
+            try { ctrl.InitializeFromChildren(); } catch { /* compat */ }
+            
+            ctrl.enabled = true;
+        }
+        else
+        {
+            // Mais barato que destruir; se quiser agressivo, troque por Destroy(ctrl)
+            if (ctrl) ctrl.enabled = false;
+        }
     }
     #endregion
 }

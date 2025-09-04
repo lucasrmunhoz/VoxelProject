@@ -146,6 +146,14 @@ public class RoomInstance
     [Tooltip("Flag auxiliar para depuração (foi pós-populada?).")]
     public bool populated;
 
+    // -------------------- ADIÇÕES (streaming de portas) --------------------
+    [Tooltip("Gerador que construiu esta sala (para utilidades de streaming).")]
+    public BaseRoomGenerator builder;
+
+    [Tooltip("Tamanho mundial de 1 voxel usado nesta sala.")]
+    public float voxelSize = 1f;
+    // ----------------------------------------------------------------------
+
     public void ResetCollections()
     {
         voxels ??= new List<Transform>();
