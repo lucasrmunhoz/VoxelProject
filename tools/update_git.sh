@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Atualiza o repo do projeto:
 # 1) Duplica todos os .cs de Assets/_Scripts para .txt (recursivo)
-# 2) Auto-stash -> pull --rebase -> stash pop
-# 3) Commit e push (pede mensagem)
+# 2) Gera/atualiza INDEX.md com links RAW para todos os .txt
+# 3) Pergunta mensagem de commit
+# 4) Auto-stash -> pull --rebase -> stash pop -> add/commit/push
 
 set -e
 
 PROJ="/home/lucas/myunity/VoxelNightmarePrototype"
 SCRIPTS_DIR="$PROJ/Assets/_Scripts"
+INDEX_FILE="$SCRIPTS_DIR/INDEX.md"
 LOG="$PROJ/tools/update_git_last.log"
 
 cd "$PROJ"
@@ -43,10 +45,89 @@ else
 fi
 
 # -------------------------------
-# 2) Fluxo Git com auto-stash
+# 2) Gerar/atualizar INDEX.md (links RAW)
 # -------------------------------
+echo -e "\n== Gerando INDEX.md de links RAW ==" | tee -a "$LOG"
 
-# Perguntar mensagem de commit
+# Detectar owner/repo a partir do remote
+REMOTE_URL="$(git config --get remote.origin.url || true)"
+OWNER=""
+REPO=""
+
+if [[ "$REMOTE_URL" =~ ^git@github\.com:([^/]+)/([^\.]+)\.git$ ]]; then
+  OWNER="${BASH_REMATCH[1]}"
+  REPO="${BASH_REMATCH[2]}"
+elif [[ "$REMOTE_URL" =~ ^https://github\.com/([^/]+)/([^\.]+)\.git$ ]]; then
+  OWNER="${BASH_REMATCH[1]}"
+  REPO="${BASH_REMATCH[2]}"
+fi
+
+# Fallback seguro (se parsing falhar)
+[ -z "$OWNER" ] && OWNER="lucasrmunhoz"
+[ -z "$REPO" ] && REPO="VoxelProject"
+
+# Branch atual (fallback para main)
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+[ -z "$BRANCH" ] && BRANCH="main"
+
+RAW_BASE="https://raw.githubusercontent.com/$OWNER/$REPO/$BRANCH/Assets/_Scripts"
+TREE_LINK="https://github.com/$OWNER/$REPO/tree/$BRANCH/Assets/_Scripts"
+
+# Criar/limpar arquivo
+{
+  echo "# Scripts RAW Index"
+  echo
+  echo "- **Árvore no GitHub**: $TREE_LINK"
+  echo "- **Gerado em**: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo
+} > "$INDEX_FILE"
+
+if [ -d "$SCRIPTS_DIR" ]; then
+  # Entrar na pasta para facilitar paths relativos
+  pushd "$SCRIPTS_DIR" >/dev/null
+
+  # Vamos agrupar por diretório (ordem determinística)
+  current_dir="__NONE__"
+
+  # Encontrar todos .txt, ordenar, e escrever seções
+  while IFS= read -r -d '' rel; do
+    # Ex.: ./Voxels/BaseVoxel.txt  -> DIR="Voxels"  FILE="BaseVoxel.txt"
+    #      ./BaseRoomGenerator.txt -> DIR="."       FILE="BaseRoomGenerator.txt"
+    clean="${rel#./}"
+    DIR="$(dirname "$clean")"
+    FILE="$(basename "$clean")"
+
+    # Se mudou de diretório, abre um cabeçalho
+    if [ "$DIR" != "$current_dir" ]; then
+      echo >> "$INDEX_FILE"
+      if [ "$DIR" = "." ]; then
+        echo "## (raiz de _Scripts)" >> "$INDEX_FILE"
+      else
+        echo "## $DIR" >> "$INDEX_FILE"
+      fi
+      echo >> "$INDEX_FILE"
+      current_dir="$DIR"
+    fi
+
+    # Monta URL RAW
+    if [ "$DIR" = "." ]; then
+      RAW_URL="$RAW_BASE/$FILE"
+    else
+      RAW_URL="$RAW_BASE/$DIR/$FILE"
+    fi
+
+    echo "- [$FILE]($RAW_URL)" >> "$INDEX_FILE"
+  done < <(find . -type f -name "*.txt" -print0 | LC_ALL=C sort -z)
+
+  popd >/dev/null
+  echo "INDEX.md gerado em: $INDEX_FILE" | tee -a "$LOG"
+else
+  echo "Aviso: não foi possível gerar INDEX.md (pasta não encontrada: $SCRIPTS_DIR)" | tee -a "$LOG"
+fi
+
+# -------------------------------
+# 3) Mensagem de commit
+# -------------------------------
 if [ -z "$1" ]; then
   read -p "Mensagem do commit: " MSG
 else
@@ -54,7 +135,9 @@ else
 fi
 [ -z "$MSG" ] && MSG="update"
 
-# Função: há mudanças locais?
+# -------------------------------
+# 4) Fluxo Git com auto-stash
+# -------------------------------
 dirty_worktree() {
   # modificações não staged?
   if ! git diff --quiet; then return 0; fi
@@ -75,7 +158,7 @@ if dirty_worktree; then
 fi
 
 echo -e "\n== Pull (rebase) ==" | tee -a "$LOG"
-if ! git pull --rebase origin main | tee -a "$LOG"; then
+if ! git pull --rebase origin "$BRANCH" | tee -a "$LOG"; then
   echo -e "\n❌ Conflito no rebase. Resolva no Git/Unity e rode o app de novo." | tee -a "$LOG"
   read -p "Pressione Enter para fechar..."
   exit 1
