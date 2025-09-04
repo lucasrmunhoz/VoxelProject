@@ -23,6 +23,9 @@ public class InteractableButton : MonoBehaviour, IInteractable
     [Tooltip("Evento disparado quando o jogador interage com sucesso com o botão.")]
     public UnityEvent OnActivated;
 
+    // Propriedade da interface IInteractable. Fornece o texto para a UI.
+    public string InteractionPrompt => "Pressionar Botão";
+
     // Otimização: MaterialPropertyBlock evita criar instâncias de material, melhorando a performance.
     private MaterialPropertyBlock _mpb;
     
@@ -31,42 +34,6 @@ public class InteractableButton : MonoBehaviour, IInteractable
 
     private Coroutine _resetColorCoroutine;
     private bool _isFocused = false;
-
-    // --- PATCH: Implementações mínimas da interface IInteractable ---
-    // Propriedade da interface IInteractable. Fornece o texto para a UI.
-    public string Prompt => "Pressione [E]";
-
-    /// <summary>
-    /// Método da interface IInteractable. Verifica se a interação é possível.
-    /// </summary>
-    public bool CanInteract(Transform interactor)
-    {
-        // Mantemos a lógica neutra: habilitado e com interactor válido.
-        return isActiveAndEnabled && interactor != null;
-    }
-
-    /// <summary>
-    /// Método chamado quando o jogador pressiona a tecla de interação enquanto foca neste objeto.
-    /// Este método implementa a interface e aciona a lógica original do botão.
-    /// </summary>
-    public void Interact(Transform interactor)
-    {
-        // Dispara o evento de forma segura. Outros sistemas podem se inscrever neste evento.
-        OnActivated?.Invoke();
-        Debug.Log($"Botão pressionado por '{interactor.name}'.");
-
-        // Para a corrotina anterior se ela estiver em execução, para evitar comportamentos inesperados.
-        if (_resetColorCoroutine != null)
-        {
-            StopCoroutine(_resetColorCoroutine);
-        }
-
-        // Inicia a rotina de feedback visual sem usar Invoke.
-        _resetColorCoroutine = StartCoroutine(InteractionFeedbackCoroutine());
-        
-        // A interface agora é void, então não há retorno. A lógica de sucesso é implícita.
-    }
-     // --- fim do PATCH ---
 
     private void Awake()
     {
@@ -89,6 +56,27 @@ public class InteractableButton : MonoBehaviour, IInteractable
         {
             _buttonRenderer = GetComponent<Renderer>();
         }
+    }
+
+    /// <summary>
+    /// Método chamado quando o jogador pressiona a tecla de interação enquanto foca neste objeto.
+    /// </summary>
+    public bool Interact(GameObject interactor)
+    {
+        // Dispara o evento de forma segura. Outros sistemas podem se inscrever neste evento.
+        OnActivated?.Invoke();
+        Debug.Log($"Botão pressionado por '{interactor.name}'.");
+
+        // Para a corrotina anterior se ela estiver em execução, para evitar comportamentos inesperados.
+        if (_resetColorCoroutine != null)
+        {
+            StopCoroutine(_resetColorCoroutine);
+        }
+
+        // Inicia a rotina de feedback visual sem usar Invoke.
+        _resetColorCoroutine = StartCoroutine(InteractionFeedbackCoroutine());
+
+        return true; // Indica que a interação foi bem-sucedida.
     }
 
     /// <summary>

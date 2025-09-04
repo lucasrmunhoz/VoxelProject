@@ -1,17 +1,23 @@
 // GameFlowManager.cs
 // Gerenciador de fluxo de jogo / streaming procedural de salas.
-// ATUALIZADO: Gerencia uma lista de geradores especialistas (ex: BedroomGenerator) encontrados em seus filhos.
-// NOTA: Nenhuma alteração foi necessária neste script. Seu gerador de números aleatórios interno (_rng) 
-// é inicializado e usado de forma segura dentro de seu próprio ciclo de vida, não causando a race condition
-// que foi corrigida nos scripts BaseRoomGenerator e BedroomGenerator.
-// ALTERADO: Adicionada lógica para impedir o descarregamento de salas por distância antes do jogador entrar na primeira sala procedural.
+// (versão ajustada: evita yield dentro de try/catch; corrige manipulação do LinkedList<ActiveRoom>)
+// Compatível com BaseRoomGenerator e variações (GenerateRoom overloads, ClearRoom, etc.)
+// Recursos principais:
+//  - Mapeamento determinístico por seed
+//  - Fila assíncrona de geração de salas (evita spikes)
+//  - Gestão de salas ativas com limite (LRU) e remoção/reciclagem automática
+//  - Robustez via reflection para múltiplas assinaturas de API do generator
+//  - Hooks/events para integração (UI, NavMesh, som...)
+//  - Fechamento de portas por reflexão quando jogador entra
+//  - Logs detalhados opcionais
+//
+// Nota: adapte nomes de container/padrões se seu BaseRoomGenerator usa outro esquema de nomeação.
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
-using UnityEngine.Profiling;
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -20,28 +26,35 @@ using UnityEditor;
 [DisallowMultipleComponent]
 public class GameFlowManager : MonoBehaviour
 {
-    // --- SUGESTÃO DE ALTERAÇÃO (Início) ---
-    [Header("Generator Management")]
-    [Tooltip("Lista de geradores especialistas (ex: BedroomGenerator) que o GameFlow pode usar. Preenchido automaticamente a partir dos filhos se vazio.")]
-    public List<BaseRoomGenerator> specialistGenerators;
-    // Cache interno para geradores encontrados nos filhos.
-    private List<BaseRoomGenerator> _foundGenerators = new List<BaseRoomGenerator>();
-    // --- SUGESTÃO DE ALTERAÇÃO (Fim) ---
+    [Header("Referências")]
+    [Tooltip("Componente que gera salas. Pode ser BaseRoomGenerator, SimpleRoomGenerator ou outro com métodos compatíveis.")]
+    public MonoBehaviour baseRoomGenerator;
 
-    [Header("References")]
-    [Tooltip("Parent para todas as salas geradas (facilita busca e organização).")]
+    [Tooltip("Parent para todos os containers de sala (opcional). Será criado se nulo).")]
     public Transform roomsRoot;
 
-    [Header("Map")]
-    public int mapRoomCount = 32;
-    public int maxPlacementAttemptsPerRoom = 48;
-    public int maxActiveRooms = 8;
-    public int startIndex = 0;
+    [Header("Mapeamento")]
+    [Tooltip("Quantas salas mapear (tentativas).")]
+    public int mapRoomCount = 100;
+
+    [Tooltip("Seed; 0 = usa hora atual (não determinístico).")]
     public int seed = 0;
 
-    [Header("Generation")]
+    [Tooltip("Tentar posicionar cada sala até N vezes antes de desistir.")]
+    public int maxPlacementAttemptsPerRoom = 60;
+
+    [Tooltip("Tamanhos min/max para rooms (em voxels).")]
+    public Vector2Int roomSizeMin = new Vector2Int(4, 4);
+    public Vector2Int roomSizeMax = new Vector2Int(12, 12);
+
+    [Header("Streaming / Ativação")]
+    [Tooltip("Número máximo de salas ativas simultaneamente (LRU). Salas antigas serão descarregadas.")]
+    [Min(1)] public int maxActiveRooms = 6;
+
+    [Tooltip("Se true, PopulateRoomAtIndex será enfileirada e executada de forma assíncrona (recomendado).")]
     public bool useAsyncGeneration = true;
-    public int maxVoxelsPerFrame = 1024;
+
+    [Tooltip("Timeout em segundos para esperar a geração completar antes de logar erro (apenas diagnósticos).")]
     public float generationTimeout = 12f;
 
     [Header("Player / Flow")]
@@ -58,48 +71,37 @@ public class GameFlowManager : MonoBehaviour
     [Serializable]
     public struct RoomPlan
     {
-        public int index;
         public Vector2Int originGrid;
         public Vector2Int size;
-        // Futuramente, poderia ter um RoomType para escolher o gerador correto.
-        // public RoomType roomType; 
+        public int index;
     }
 
     private class ActiveRoom
     {
         public RoomPlan plan;
         public Transform container;
+        public int index;
         public DateTime loadedAt;
-        public long usageTick;
-        public int index => plan.index;
+        public int usageTick; // para LRU
     }
 
-    // ---------- Fields ----------
+    // ---------- Estado ----------
+    private System.Random _rng;
     private List<RoomPlan> _roomPlans = new List<RoomPlan>();
     private HashSet<Vector2Int> _occupiedTiles = new HashSet<Vector2Int>();
-    private LinkedList<ActiveRoom> _activeRooms = new LinkedList<ActiveRoom>();
+    private LinkedList<ActiveRoom> _activeRooms = new LinkedList<ActiveRoom>(); // MRU at front
     private Dictionary<Transform, ActiveRoom> _byContainer = new Dictionary<Transform, ActiveRoom>();
+
     private Queue<int> _generationQueue = new Queue<int>();
     private bool _isGenerating = false;
     private int _usageCounter = 0;
-    private ActiveRoom _currentActiveRoom = null;
-    private System.Random _rng;
 
-    // =======================================================================
-    // INÍCIO DO BLOCO ADICIONADO
-    // =======================================================================
-    // Trava para a lógica de descarregamento por distância.
-    private bool _proceduralFlowHasStarted = false;
-    // =======================================================================
-    // FIM DO BLOCO ADICIONADO
-    // =======================================================================
-
-    // events
-    public event Action OnMapReady;
+    // Events para integração externa
     public event Action<RoomPlan, Transform> OnRoomLoaded;
-    public event Action<RoomPlan, Transform> OnRoomUnloaded;
+    public event Action<RoomPlan> OnRoomUnloaded;
+    public event Action OnMapReady;
 
-    // ---------- Unity lifecycle ----------
+    // ---------- Unity ----------
     private void Awake()
     {
         if (seed == 0) seed = Environment.TickCount;
@@ -116,66 +118,19 @@ public class GameFlowManager : MonoBehaviour
             roomsRoot = go.transform;
         }
 
-        // --- SUGESTÃO DE ALTERAÇÃO (Início) ---
-        // Popula a lista de geradores.
-        if (specialistGenerators == null || specialistGenerators.Count == 0)
-        {
-            // Busca por todos os componentes que herdam de BaseRoomGenerator nos filhos deste objeto.
-            GetComponentsInChildren<BaseRoomGenerator>(true, _foundGenerators);
-            specialistGenerators = _foundGenerators;
-        }
-
-        if (specialistGenerators.Count == 0)
-        {
-            Debug.LogError("[GameFlowManager] Nenhum gerador especialista (ex: BedroomGenerator) foi encontrado nos filhos ou atribuído no Inspector!", this);
-            return; // Impede a execução se nenhum gerador for encontrado.
-        }
-        // --- SUGESTÃO DE ALTERAÇÃO (Fim) ---
-
-        // Se inscreve nos eventos de cada gerador encontrado.
-        foreach (var generator in specialistGenerators)
-        {
-            // Opcional: Garante que o gerador use uma raiz de salas comum se não tiver uma própria.
-            var genRoot = generator.transform.Find("GeneratedRooms");
-            if (genRoot != null && roomsRoot == null) roomsRoot = genRoot;
-
-            // Quando o gerador concluir a população de uma sala, registra imediatamente.
-            generator.OnRoomPopulated += (BaseRoomGenerator.RoomInstance room) =>
-            {
-                try
-                {
-                    int idx = _roomPlans.FindIndex(p => p.originGrid == room.originGrid && p.size == room.size);
-                    if (idx >= 0)
-                    {
-                        var plan = _roomPlans[idx];
-                        RegisterActiveRoom(plan, room.container);
-                        OnRoomLoaded?.Invoke(plan, room.container);
-                    }
-                }
-                catch (Exception ex) { Debug.LogException(ex); }
-            };
-        }
-
         MapAllRoomsLayout();
         OnMapReady?.Invoke();
-
-        startIndex = Mathf.Clamp(startIndex, 0, _roomPlans.Count - 1);
-        EnqueueRoomGeneration(startIndex);
     }
 
     private void Start()
     {
-        if (_roomPlans.Count > 0 && !_isGenerating)
-            EnqueueRoomGeneration(startIndex);
+        // If desired, auto-start first room at index 0
+        // StartProceduralFlow() should be called by UI/Hub normally
     }
 
     private void Update()
     {
-        if (_currentActiveRoom != null)
-        {
-            _currentActiveRoom.usageTick = ++_usageCounter;
-        }
-
+        // Optionally manage unloading by distance to player
         if (playerTransform != null)
         {
             ManageUnloadByPlayerDistance();
@@ -188,75 +143,71 @@ public class GameFlowManager : MonoBehaviour
         _roomPlans.Clear();
         _occupiedTiles.Clear();
 
-        if (specialistGenerators == null || specialistGenerators.Count == 0)
-        {
-            Debug.LogError("[GameFlowManager] Nenhum gerador especialista disponível! Mapeamento cancelado.");
-            return;
-        }
-
-        // --- SUGESTÃO DE ALTERAÇÃO (INÍCIO) ---
         Vector2Int cursor = Vector2Int.zero;
-        // Tenta encontrar o gerador que tem o Hub inicial
-        var hubGenerator = specialistGenerators.FirstOrDefault(g => g.initialHubRoom != null);
-        if (hubGenerator != null && hubGenerator.initialHubRoom != null)
+        // Optionally derive cursor from player's position (if available)
+        if (playerTransform != null)
         {
-            // Encontra o ExitAnchor dentro do Hub
-            var exitAnchor = hubGenerator.initialHubRoom.Find("ExitAnchor");
-            if (exitAnchor != null)
-            {
-                // Usa a posição do ExitAnchor como ponto de partida para o mapa
-                var anchorPos = exitAnchor.position;
-                var voxelSize = hubGenerator.voxelSize > 0 ? hubGenerator.voxelSize : 1.0f;
-                cursor = new Vector2Int(Mathf.RoundToInt(anchorPos.x / voxelSize), Mathf.RoundToInt(anchorPos.z / voxelSize));
-
-                if(verbose) Debug.Log($"[GameFlowManager] Ponto de partida do mapa definido pelo ExitAnchor do Hub em {cursor}");
-            }
-        }
-        else if (playerTransform != null)
-        {
-            // Fallback para a posição do jogador se o Hub não for encontrado
             var wp = playerTransform.position;
             cursor = new Vector2Int(Mathf.RoundToInt(wp.x), Mathf.RoundToInt(wp.z));
         }
-        // --- SUGESTÃO DE ALTERAÇÃO (FIM) ---
 
         for (int i = 0; i < mapRoomCount; i++)
         {
             bool placed = false;
             for (int attempt = 0; attempt < maxPlacementAttemptsPerRoom; attempt++)
             {
-                // --- SUGESTÃO DE ALTERAÇÃO (Início) ---
-                // Escolhe um gerador aleatório da lista para definir o tamanho da sala.
-                var randomGenerator = specialistGenerators[_rng.Next(0, specialistGenerators.Count)];
-                Vector2Int size = randomGenerator.GetRandomSize(_rng);
-                // --- SUGESTÃO DE ALTERAÇÃO (Fim) ---
-
+                Vector2Int size = RandomRoomSize();
                 Vector2Int origin = FindOriginForIndex(i, cursor, size);
                 if (IsAreaFree(origin, size))
                 {
-                    var rp = new RoomPlan { index = i, originGrid = origin, size = size };
-                    _roomPlans.Add(rp);
                     MarkArea(origin, size);
+                    var plan = new RoomPlan { originGrid = origin, size = size, index = i };
+                    _roomPlans.Add(plan);
+                    // advance cursor heuristically
+                    cursor = ChooseRandomEdgeGrid(origin, size);
                     placed = true;
                     break;
                 }
             }
             if (!placed)
             {
-                // fallback: coloca em cursor deslocado
-                var randomGenerator = specialistGenerators[_rng.Next(0, specialistGenerators.Count)];
-                var fallback = new RoomPlan { index = i, originGrid = cursor + new Vector2Int(i * 2, 0), size = randomGenerator.GetRandomSize(_rng) };
-                _roomPlans.Add(fallback);
-                MarkArea(fallback.originGrid, fallback.size);
+                if (verbose) Debug.LogWarning($"[GameFlowManager] Não foi possível posicionar sala #{i} após {maxPlacementAttemptsPerRoom} tentativas.");
+                break;
             }
         }
+
+        if (verbose) Debug.Log($"[GameFlowManager] Mapeamento completo: {_roomPlans.Count} salas (seed={seed}).");
+    }
+
+    private Vector2Int RandomRoomSize()
+    {
+        int w = _rng.Next(roomSizeMin.x, roomSizeMax.x + 1);
+        int d = _rng.Next(roomSizeMin.y, roomSizeMax.y + 1);
+        return new Vector2Int(w, d);
     }
 
     private Vector2Int FindOriginForIndex(int index, Vector2Int cursor, Vector2Int size)
     {
-        int ring = index / 8;
-        int offset = index % 8;
-        return cursor + new Vector2Int(ring * (size.x + 1), offset * (size.y + 1));
+        var dirs = new List<Vector2Int> { new Vector2Int(1, 0), new Vector2Int(-1, 0), new Vector2Int(0, 1), new Vector2Int(0, -1) };
+        var dir = dirs[_rng.Next(0, dirs.Count)];
+        Vector2Int offset;
+        if (dir.x != 0) offset = new Vector2Int((dir.x > 0) ? size.x : -size.x, 0);
+        else offset = new Vector2Int(0, (dir.y > 0) ? size.y : -size.y);
+
+        Vector2Int origin = cursor + offset + new Vector2Int(_rng.Next(-2, 3), _rng.Next(-2, 3));
+        return origin;
+    }
+
+    private Vector2Int ChooseRandomEdgeGrid(Vector2Int origin, Vector2Int size)
+    {
+        int side = _rng.Next(0, 4);
+        switch (side)
+        {
+            case 0: return new Vector2Int(origin.x + size.x, origin.y + _rng.Next(0, size.y));
+            case 1: return new Vector2Int(origin.x - 1, origin.y + _rng.Next(0, size.y));
+            case 2: return new Vector2Int(origin.x + _rng.Next(0, size.x), origin.y + size.y);
+            default: return new Vector2Int(origin.x + _rng.Next(0, size.x), origin.y - 1);
+        }
     }
 
     private bool IsAreaFree(Vector2Int origin, Vector2Int size)
@@ -274,20 +225,45 @@ public class GameFlowManager : MonoBehaviour
                 _occupiedTiles.Add(new Vector2Int(x, y));
     }
 
-    // ---------- Generation queue ----------
+    // ---------- Flow control ----------
+    /// <summary>
+    /// Inicia a população a partir de um índice (ex: 0). Enfileira a geração se async configurado.
+    /// </summary>
+    public void StartProceduralFlow(int startIndex = 0)
+    {
+        if (_roomPlans == null || _roomPlans.Count == 0)
+        {
+            MapAllRoomsLayout();
+            OnMapReady?.Invoke();
+        }
+
+        startIndex = Mathf.Clamp(startIndex, 0, _roomPlans.Count - 1);
+        EnqueueRoomGeneration(startIndex);
+    }
+
     public void EnqueueRoomGeneration(int index)
     {
         if (index < 0 || index >= _roomPlans.Count)
         {
-            if (verbose) Debug.LogWarning($"[GameFlowManager] Índice inválido para geração de sala: {index}.");
+            Debug.LogError("[GameFlowManager] Índice inválido para geração de sala.");
             return;
         }
-        
-        if (!_generationQueue.Contains(index))
-            _generationQueue.Enqueue(index);
 
-        if (!_isGenerating)
+        // avoid duplicates in queue
+        if (!_generationQueue.Contains(index))
+        {
+            _generationQueue.Enqueue(index);
+            if (verbose) Debug.Log($"[GameFlowManager] Sala {index} enfileirada para geração.");
+        }
+
+        if (useAsyncGeneration && !_isGenerating)
+        {
             StartCoroutine(ProcessGenerationQueue());
+        }
+        else if (!_isGenerating) // support non-async mode
+        {
+            StartCoroutine(ProcessGenerationQueue());
+        }
     }
 
     private IEnumerator ProcessGenerationQueue()
@@ -303,10 +279,19 @@ public class GameFlowManager : MonoBehaviour
 
             Transform container = null;
             Exception invokeException = null;
-            
-            try { InvokeBaseGeneratorForPlan(plan); }
-            catch (Exception ex) { invokeException = ex; Debug.LogException(ex); }
-            
+
+            // 1) invoke generator (wrapped in try - but NO yield here)
+            try
+            {
+                InvokeBaseGeneratorForPlan(plan);
+            }
+            catch (Exception ex)
+            {
+                invokeException = ex;
+                Debug.LogException(ex);
+            }
+
+            // 2) wait for container detection (this may yield) - executed outside try/catch to avoid CS1626
             if (invokeException == null)
             {
                 float elapsed = 0f;
@@ -318,7 +303,9 @@ public class GameFlowManager : MonoBehaviour
                     yield return new WaitForSecondsRealtime(0.05f);
                 }
                 if (container == null)
-                    Debug.LogError($"[GameFlowManager] Timeout ao tentar localizar container para sala {index} (origin {plan.originGrid}).");
+                {
+                    Debug.LogError($"[GameFlowManager] Timeout ao localizar container para sala {index} (origin {plan.originGrid}).");
+                }
             }
 
             if (container != null)
@@ -326,67 +313,54 @@ public class GameFlowManager : MonoBehaviour
                 RegisterActiveRoom(plan, container);
                 OnRoomLoaded?.Invoke(plan, container);
             }
-            
+
+            // Keep loop breathing
             if (useAsyncGeneration)
                 yield return null;
         }
+
         _isGenerating = false;
     }
 
-    private void InvokeBaseGeneratorForPlan(RoomPlan plan)
-    {
-        // --- SUGESTÃO DE ALTERAÇÃO (Início) ---
-        // TODO: Adicionar lógica para escolher um gerador específico com base no
-        // tipo de sala (plan.roomType, por exemplo). Por enquanto, escolhemos um aleatoriamente.
-        var generatorToUse = specialistGenerators[_rng.Next(0, specialistGenerators.Count)];
 
-        // O resto do método usa a variável 'generatorToUse' em vez de uma referência única.
-        var method = generatorToUse.GetType().GetMethod("GenerateRoom", new Type[] { typeof(Vector2Int), typeof(Vector2Int) });
-        if (method != null)
-        {
-            method.Invoke(generatorToUse, new object[] { plan.originGrid, plan.size });
-            return;
-        }
-
-        method = generatorToUse.GetType().GetMethod("GenerateRoom", new Type[] { });
-        if (method != null)
-        {
-            method.Invoke(generatorToUse, null);
-            return;
-        }
-
-        // fallback genérico (vai chamar a versão virtual do BaseRoomGenerator)
-        try
-        {
-            generatorToUse.GenerateRoom(plan.originGrid, plan.size);
-            return;
-        }
-        catch
-        {
-            // se não der, tentamos reflection genérico lançado (mantive o throw abaixo)
-        }
-        // --- SUGESTÃO DE ALTERAÇÃO (Fim) ---
-        throw new MissingMethodException($"Nenhum método GenerateRoom compatível encontrado em {generatorToUse.GetType().Name}.");
-    }
-
-    // ---------- Registration ----------
+    // ---------- Registration / LRU ----------
     private void RegisterActiveRoom(RoomPlan plan, Transform container)
     {
         if (container == null) return;
         
+        // If already registered, update usage and move to front
         if (_byContainer.TryGetValue(container, out var existing))
         {
             existing.usageTick = ++_usageCounter;
             existing.loadedAt = DateTime.UtcNow;
+
+            // move its linked-list node to front (MRU)
             var node = _activeRooms.Find(existing);
-            if (node != null) { _activeRooms.Remove(node); _activeRooms.AddFirst(node); }
+            if (node != null)
+            {
+                _activeRooms.Remove(node);
+                _activeRooms.AddFirst(node);
+            }
             return;
         }
         
-        var ar = new ActiveRoom { plan = plan, container = container, loadedAt = DateTime.UtcNow, usageTick = ++_usageCounter };
+        // Register new room
+        var ar = new ActiveRoom
+        {
+            plan = plan,
+            container = container,
+            index = plan.index,
+            loadedAt = DateTime.UtcNow,
+            usageTick = ++_usageCounter
+        };
+
+        // add to front (MRU)
         _activeRooms.AddFirst(ar);
         _byContainer[container] = ar;
+
         if (verbose) Debug.Log($"[GameFlowManager] Sala registrada: index={plan.index}, container={container.name}");
+
+        // enforce limit
         EnforceActiveRoomLimit();
     }
 
@@ -396,132 +370,300 @@ public class GameFlowManager : MonoBehaviour
         {
             var lruNode = _activeRooms.Last;
             if (lruNode == null) break;
+
             var lru = lruNode.Value;
             if (lru != null)
             {
-                if (lru == _currentActiveRoom) break;
                 if (verbose) Debug.Log($"[GameFlowManager] Removendo sala LRU index={lru.index}");
                 UnloadRoom(lru);
             }
-            else { _activeRooms.RemoveLast(); }
+            else
+            {
+                // Should not happen if list is consistent, but as a safeguard:
+                _activeRooms.RemoveLast();
+            }
         }
     }
 
-    private void UnloadRoom(ActiveRoom ar)
+    private void UnloadRoom(ActiveRoom toUnload)
     {
-        if (ar == null) return;
-        if (ar.container != null)
+        if (toUnload == null) return;
+
+        // try to call ClearRoom on baseRoomGenerator via reflection (prefer)
+        bool cleared = TryClearRoomViaGenerator(toUnload.container);
+
+        // fallback: destroy container safely (and fire event)
+        if (!cleared)
+        {
+            if (toUnload.container != null)
+            {
+#if UNITY_EDITOR
+                if (!Application.isPlaying)
+                    UnityEngine.Object.DestroyImmediate(toUnload.container.gameObject);
+                else
+                    Destroy(toUnload.container.gameObject);
+#else
+                Destroy(toUnload.container.gameObject);
+#endif
+            }
+        }
+
+        // cleanup maps
+        if (toUnload.container != null)
+        {
+            _byContainer.Remove(toUnload.container);
+        }
+        _activeRooms.Remove(toUnload);
+
+        OnRoomUnloaded?.Invoke(toUnload.plan);
+    }
+
+    private bool TryClearRoomViaGenerator(Transform container)
+    {
+        if (baseRoomGenerator == null || container == null) return false;
+        Type genType = baseRoomGenerator.GetType();
+
+        // Try different signatures: ClearRoom(RoomInstance), ClearRoom(Transform), ClearRoom(GameObject)
+        MethodInfo m = genType.GetMethod("ClearRoom", new Type[] { typeof(Transform) })
+                       ?? genType.GetMethod("ClearRoom", new Type[] { typeof(GameObject) });
+        if (m != null)
         {
             try
             {
-                // Tenta chamar ClearRoom no primeiro gerador disponível (pode ser melhorado no futuro)
-                var generator = specialistGenerators.FirstOrDefault();
-                var mi = generator?.GetType().GetMethod("ClearRoom", new Type[] { typeof(Transform) });
-                if (mi != null) mi.Invoke(generator, new object[] { ar.container });
-                else
-                {
-                    GameObject.Destroy(ar.container.gameObject);
-                }
+                object arg = (m.GetParameters()[0].ParameterType == typeof(GameObject)) ? (object)container.gameObject : (object)container;
+                m.Invoke(baseRoomGenerator, new object[] { arg });
+                return true;
             }
             catch (Exception ex)
             {
-                Debug.LogException(ex);
+                if (verbose) Debug.LogWarning($"[GameFlowManager] ClearRoom via generator falhou: {ex.Message}");
+            }
+        }
+        return false;
+    }
+
+    // ---------- Generator invocation (robusto via reflection) ----------
+    private void InvokeBaseGeneratorForPlan(RoomPlan plan)
+    {
+        if (baseRoomGenerator == null) throw new InvalidOperationException("baseRoomGenerator não atribuído.");
+
+        Type genType = baseRoomGenerator.GetType();
+
+        // Try known signatures in order of preference
+        // 1) GenerateRoom(Vector2Int origin, Vector2Int size)
+        var m_sig1 = genType.GetMethod("GenerateRoom", new Type[] { typeof(Vector2Int), typeof(Vector2Int), typeof(int), typeof(bool) });
+        if (m_sig1 != null)
+        {
+            try
+            {
+                // signature may be (origin,size,height,gradual)
+                int height = TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3);
+                bool gradual = TryGetFieldOrPropBool(genType, baseRoomGenerator, "generateGradually", true);
+                m_sig1.Invoke(baseRoomGenerator, new object[] { plan.originGrid, plan.size, height, gradual });
+                return;
+            }
+            catch { /* continue fallback */ }
+        }
+
+        // 2) GenerateRoom(Vector2Int origin, Vector2Int size)
+        var m_sig2 = genType.GetMethod("GenerateRoom", new Type[] { typeof(Vector2Int), typeof(Vector2Int) });
+        if (m_sig2 != null)
+        {
+            try
+            {
+                m_sig2.Invoke(baseRoomGenerator, new object[] { plan.originGrid, plan.size });
+                return;
+            }
+            catch { /* continue fallback */ }
+        }
+
+        // 3) GenerateRoom(Vector2Int size) or GenerateRoom(Vector2Int origin)
+        var m_sig3a = genType.GetMethod("GenerateRoom", new Type[] { typeof(Vector2Int) });
+        if (m_sig3a != null)
+        {
+            try
+            {
+                // prefer calling with origin if name suggests so, otherwise size
+                // We'll call with origin then size as fallback
+                m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.originGrid });
+                return;
+            }
+            catch
+            {
+                try
+                {
+                    m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.size });
+                    return;
+                }
+                catch { }
             }
         }
 
-        if (ar.container != null && _byContainer.ContainsKey(ar.container)) _byContainer.Remove(ar.container);
-        _activeRooms.Remove(ar);
-        OnRoomUnloaded?.Invoke(ar.plan, ar.container);
+        // 4) GenerateRoom() with fields set on generator (roomOriginGrid, roomSize, roomHeight)
+        var m0 = genType.GetMethod("GenerateRoom", Type.EmptyTypes);
+        if (m0 != null)
+        {
+            // set public fields/properties if available
+            FieldOrPropSet(genType, baseRoomGenerator, "roomOriginGrid", plan.originGrid);
+            FieldOrPropSet(genType, baseRoomGenerator, "roomSize", plan.size);
+            FieldOrPropSet(genType, baseRoomGenerator, "roomHeight", TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3));
+            m0.Invoke(baseRoomGenerator, null);
+            return;
+        }
+
+        // 5) As last resort, try calling a "GenerateRoom(RoomPlan)" if exists with matching type (unlikely)
+        var rpType = typeof(RoomPlan);
+        var m4 = genType.GetMethod("GenerateRoom", new Type[] { rpType });
+        if (m4 != null)
+        {
+            m4.Invoke(baseRoomGenerator, new object[] { plan });
+            return;
+        }
+
+        throw new MissingMethodException("Nenhum método GenerateRoom compatível encontrado no BaseRoomGenerator fornecido.");
     }
 
-    // ---------- Player triggers / room enter ----------
-    public void OnPlayerEnterRoom(Transform roomContainer)
+    private int TryGetFieldOrPropInt(Type t, object instance, string name, int defaultValue)
     {
-        if (roomContainer == null) return;
-        if (!_byContainer.TryGetValue(roomContainer, out var enteredRoom)) return;
-
-        // =======================================================================
-        // INÍCIO DO BLOCO ALTERADO
-        // =======================================================================
-        // Ativa a lógica de "procedural flow" e o descarregamento por distância.
-        _proceduralFlowHasStarted = true;
-        // =======================================================================
-        // FIM DO BLOCO ALTERADO
-        // =======================================================================
-
-        _currentActiveRoom = enteredRoom;
-        enteredRoom.usageTick = ++_usageCounter;
-        if (verbose) Debug.Log($"[GameFlowManager] Jogador entrou na sala index={enteredRoom.index}");
+        var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (f != null && f.FieldType == typeof(int)) return (int)f.GetValue(instance);
+        var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (p != null && p.PropertyType == typeof(int)) return (int)p.GetValue(instance, null);
+        return defaultValue;
     }
 
-    // ---------- Find generated container (optimized) ----------
+    private bool TryGetFieldOrPropBool(Type t, object instance, string name, bool defaultValue)
+    {
+        var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (f != null && f.FieldType == typeof(bool)) return (bool)f.GetValue(instance);
+        var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (p != null && p.PropertyType == typeof(bool)) return (bool)p.GetValue(instance, null);
+        return defaultValue;
+    }
+
+    private void FieldOrPropSet(Type type, object instance, string name, object value)
+    {
+        var f = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (f != null && f.FieldType.IsAssignableFrom(value.GetType()))
+        {
+            f.SetValue(instance, value);
+            return;
+        }
+        var p = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (p != null && p.CanWrite && p.PropertyType.IsAssignableFrom(value.GetType()))
+        {
+            p.SetValue(instance, value, null);
+            return;
+        }
+    }
+
+    // ---------- Container discovery ----------
+    // Heurística para localizar o container criado pelo generator para um dado plan.
+    // Primeiro procura por padrão Room_{x}_{y} sob roomsRoot; depois busca globalmente.
     private Transform FindGeneratedRoomContainer(RoomPlan plan)
     {
         string namePrefix = $"Room_{plan.originGrid.x}_{plan.originGrid.y}";
-        
+        // procurar sob roomsRoot
         if (roomsRoot != null)
         {
-            var direct = roomsRoot.Find(namePrefix);
-            if (direct != null) return direct;
-            foreach (Transform t in roomsRoot)
-                if (t != null && t.name.StartsWith(namePrefix)) return t;
+            var child = roomsRoot.Find(namePrefix);
+            if (child != null) return child;
+            var all = roomsRoot.GetComponentsInChildren<Transform>(true);
+            foreach (var t in all) if (t.name.StartsWith(namePrefix)) return t;
         }
 
-        // Procura nas raízes internas de cada gerador
-        foreach(var generator in specialistGenerators)
+        // busca global
+        var global = GameObject.FindObjectsOfType<Transform>().FirstOrDefault(t => t.name.StartsWith("Room_") && t.name.Contains($"{plan.originGrid.x}_{plan.originGrid.y}"));
+        if (global != null) return global;
+
+        // fallback: retorna o último criado Room_*
+        var allRooms = GameObject.FindObjectsOfType<Transform>().Where(t => t.name.StartsWith("Room_")).ToArray();
+        if (allRooms.Length > 0)
         {
-            var genRoot = generator.transform.Find("GeneratedRooms");
-            if (genRoot != null)
+            // find one not already registered
+            for (int i = allRooms.Length - 1; i >= 0; i--)
             {
-                var direct = genRoot.Find(namePrefix);
-                if (direct != null) return direct;
-                foreach (Transform t in genRoot)
-                    if (t != null && t.name.StartsWith(namePrefix)) return t;
+                if (!_byContainer.ContainsKey(allRooms[i]))
+                    return allRooms[i];
             }
         }
 
-        var go = GameObject.Find(namePrefix);
-        if (go != null) return go.transform;
-
         return null;
+    }
+
+    // ---------- Player triggers / room enter ----------
+    /// <summary>
+    /// Deve ser chamado por um trigger quando o jogador entra na sala (ou você pode ligar a detecção automática via playerTransform).
+    /// </summary>
+    public void OnPlayerEnterRoom(Transform roomContainer)
+    {
+        if (roomContainer == null) return;
+        if (!_byContainer.TryGetValue(roomContainer, out var active)) return;
+
+        // mark usage for LRU by re-registering
+        RegisterActiveRoom(active.plan, roomContainer);
+
+        // Close doors if any via reflection
+        TryCloseDoorForRoom(active);
+    }
+
+    private void TryCloseDoorForRoom(ActiveRoom room)
+    {
+        if (room == null || room.container == null) return;
+        var comps = room.container.GetComponentsInChildren<MonoBehaviour>(true);
+        foreach (var c in comps)
+        {
+            var t = c.GetType();
+            var mClose = t.GetMethod("Close", BindingFlags.Public | BindingFlags.Instance);
+            if (mClose != null && mClose.GetParameters().Length == 0)
+            {
+                try { mClose.Invoke(c, null); return; }
+                catch { /* ignore */ }
+            }
+            var p = t.GetProperty("IsOpen", BindingFlags.Public | BindingFlags.Instance);
+            if (p != null && p.CanWrite && p.PropertyType == typeof(bool))
+            {
+                try { p.SetValue(c, false, null); return; }
+                catch { }
+            }
+        }
     }
 
     // ---------- Unload by distance ----------
     private void ManageUnloadByPlayerDistance()
     {
-        // =======================================================================
-        // INÍCIO DO BLOCO ALTERADO
-        // =======================================================================
-        // Só começa a descarregar salas por distância depois que o jogador entrar na primeira sala procedural.
-        if (!_proceduralFlowHasStarted) return;
-        // =======================================================================
-        // FIM DO BLOCO ALTERADO
-        // =======================================================================
-
         if (playerTransform == null) return;
+
         var toUnload = new List<ActiveRoom>();
-        float unloadDistanceSq = unloadDistance * unloadDistance;
+        // Iterate backwards to allow removal
         for (var node = _activeRooms.Last; node != null; node = node.Previous)
         {
             var r = node.Value;
             if (r.container == null) { toUnload.Add(r); continue; }
-            if (r == _currentActiveRoom) continue;
-            Vector3 diff = playerTransform.position - r.container.position;
-            if (diff.sqrMagnitude > unloadDistanceSq) toUnload.Add(r);
+            float dist = Vector3.Distance(playerTransform.position, r.container.position);
+            if (dist > unloadDistance)
+            {
+                toUnload.Add(r);
+            }
         }
-        
+
+
         foreach (var r in toUnload)
+        {
             if (_activeRooms.Contains(r))
             {
                 if (verbose) Debug.Log($"[GameFlowManager] Unloading room index={r.index} due to distance ({unloadDistance}).");
                 UnloadRoom(r);
             }
+        }
     }
 
     // ---------- Utilities ----------
     public IReadOnlyList<RoomPlan> GetAllPlans() => _roomPlans.AsReadOnly();
+
     public int GetActiveRoomCount() => _activeRooms.Count;
 
+    // Request to proceed to next planned room (helper)
     public void ProceedToNext()
     {
         if (_roomPlans.Count == 0) return;
@@ -530,5 +672,9 @@ public class GameFlowManager : MonoBehaviour
         EnqueueRoomGeneration(nextIndex);
     }
 
-    private void LogV(string msg) { if (verbose) Debug.Log($"[GameFlowManager] {msg}"); }
+    // ---------- Debug helpers ----------
+    private void LogV(string msg)
+    {
+        if (verbose) Debug.Log($"[GameFlowManager] {msg}");
+    }
 }

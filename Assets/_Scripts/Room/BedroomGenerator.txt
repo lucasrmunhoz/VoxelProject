@@ -1,265 +1,271 @@
 // BedroomGenerator.cs
-// Gerador especializado de quartos (herda BaseRoomGenerator)
-// Alterações: MaterialPropertyBlock para colorização, Renderer cache, pós-processamento por coroutine com budget de tempo.
-// CORRIGIDO: Atualizado para usar a propriedade 'Rng' da classe base, que implementa inicialização preguiçosa 
-// para evitar a NullReferenceException.
+// Autor: ChatGPT — gerador especializado "filho" de BaseRoomGenerator.
+// Versão: 2025-08-20 (Revisada para corrigir CS1061 e alinhar com padrão de BaseRoomGenerator)
+//
+// Propósito:
+//  - Corrigido o erro CS1061 ao adotar o padrão de geração correto.
+//  - Chamar CreateRoomContainer da classe base para criar a instância da sala.
+//  - Implementar a construção de chão e paredes, tornando o gerador autônomo.
+//  - Popular a sala com uma lista customizável de "props" (objetos).
+//  - Usar heurísticas rápidas e eficientes para escolher posições seguras para os props.
+//
+// Observações:
+//  - Este script herda de BaseRoomGenerator e estende sua funcionalidade.
+//  - Usa os métodos protegidos como SpawnFromPool e GridToWorld corretamente.
+
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-[DisallowMultipleComponent]
+// Struct para definir as propriedades de um objeto a ser colocado na sala.
+[System.Serializable]
+public struct RoomProp
+{
+    public GameObject prefab;
+    public Vector2Int size;         // Tamanho em grid (ex: 2x3 para cama)
+    [Tooltip("Se verdadeiro, tenta posicionar adjacente a uma parede.")]
+    public bool placeOnWall;
+    [Tooltip("Se verdadeiro e não for de parede, aplica uma rotação aleatória em Y.")]
+    public bool randomRotation;
+    [Range(0f, 1f)] public float placementChance; // Probabilidade de este prop ser colocado
+}
+
 public class BedroomGenerator : BaseRoomGenerator
 {
-    [Header("Bedroom Styling")]
-    [Tooltip("Cor base das paredes/voxels do quarto")]
-    public Color wallBaseColor = new Color(0.85f, 0.8f, 0.78f);
-    [Tooltip("Variação aleatória aplicada à cor base")]
-    [Range(0f, 0.5f)] public float colorVariance = 0.08f;
+    [Header("Seed / Random")]
+    [Tooltip("Seed determinística. 0 = aleatória por hora (não-determinística).")]
+    public int randomSeed = 0;
 
-    [Tooltip("Prefabs de móveis/props que podem aparecer no quarto (camas, estantes, quadros).")]
-    public GameObject[] furniturePrefabs;
+    [Header("Room Structure")]
+    [Tooltip("Altura da sala em voxels.")]
+    [Min(1)] public int roomHeight = 3; // Campo adicionado para definir a altura das paredes.
 
-    [Tooltip("Máximo de props a tentar colocar por quarto.")]
-    [Min(0)] public int maxPropsPerRoom = 4;
+    [Header("Bedroom Prop List")]
+    [SerializeField] private List<RoomProp> roomProps = new List<RoomProp>();
 
-    [Tooltip("Chance (0..1) de tentar colocar um prop em uma posição candidata.")]
-    [Range(0f,1f)] public float propPlacementChance = 0.4f;
-
-    [Header("Post-process / perf tuning")]
-    [Tooltip("Budget em milissegundos por frame para a etapa de pós-processamento (colorização e props).")]
-    public int postProcessFrameBudgetMilliseconds = 8;
-
-    [Tooltip("Máximo de voxels processados por batch se preferir limitar por contagem (opcional).")]
-    public int postProcessMaxPerBatch = 512;
-
-    // ------------ internals ------------
-    // O _rendererCache foi removido e substituído pela lógica do VoxelCache.
-
-    // material property block local (evita alocar repetidamente)
-    private static MaterialPropertyBlock _localMPB;
-
-    // Para evitar múltiplas coroutines concorrentes no mesmo room
-    private HashSet<RoomInstance> _processingRooms = new HashSet<RoomInstance>();
+    // RNG local para decisões de props, separado do RNG base.
+    private System.Random _localRng;
 
     private void Awake()
     {
-        if (_localMPB == null) _localMPB = new MaterialPropertyBlock();
-
-        // assegura que o generator (base) invoque o evento que vamos escutar
-        // registramos o listener local que fará pós-processamento quando a sala terminar de ser populada.
-        this.OnRoomPopulated += HandleRoomPopulated;
+        int seed = (randomSeed == 0) ? (Environment.TickCount ^ GetInstanceID()) : (randomSeed ^ GetInstanceID());
+        _localRng = new System.Random(seed);
     }
 
-    private void OnDestroy()
+    #region GenerateRoom Overloads (Compatibilidade com GameFlowManager)
+
+    public new RoomInstance GenerateRoom()
     {
-        // limpa assinatura para evitar memory leaks
-        this.OnRoomPopulated -= HandleRoomPopulated;
+        return GenerateRoom(roomOriginGrid, roomSize);
     }
 
-    // Se quiser sobrescrever tamanhos específicos para quartos
-    public override Vector2Int GetRandomSize(System.Random rng)
+    public new RoomInstance GenerateRoom(Vector2Int originGrid)
     {
-        // quartos mais compactos e com proporções típicas
-        int w = rng.Next(Mathf.Max(3, minRoomSize.x), Mathf.Max(minRoomSize.x+1, Mathf.Min(10, maxRoomSize.x)));
-        int d = rng.Next(Mathf.Max(3, minRoomSize.y), Mathf.Max(minRoomSize.y+1, Mathf.Min(8, maxRoomSize.y)));
-        return new Vector2Int(w, d);
+        Vector2Int randomSize = new Vector2Int(
+            _localRng.Next(minRoomSize.x, maxRoomSize.x + 1),
+            _localRng.Next(minRoomSize.y, maxRoomSize.y + 1)
+        );
+        return GenerateRoom(originGrid, randomSize);
     }
 
-    // Handler invocado pelo BaseRoomGenerator quando a sala foi totalmente populada
-    private void HandleRoomPopulated(RoomInstance room)
+    /// <summary>
+    /// Método principal que gera um quarto, construindo a base e depois populando com props.
+    /// </summary>
+    public new RoomInstance GenerateRoom(Vector2Int originGrid, Vector2Int size)
     {
-        // safety
-        if (room == null) return;
-        if (_processingRooms.Contains(room)) return;
-
-        // inicia pós-processamento (colorização + props) de forma time-sliced
-        StartCoroutine(PostProcessRoomCoroutine(room));
-    }
-
-    // Coroutine que aplica cor e coloca props, respeitando budget de tempo por frame.
-    private IEnumerator PostProcessRoomCoroutine(RoomInstance room)
-    {
-        if (room == null) yield break;
-        _processingRooms.Add(room);
-
-        // --- Preparação ---
-        // Determina cor base com variação
-        Color baseColor = wallBaseColor;
-        float v = (float)Rng.NextDouble() * colorVariance * 2f - colorVariance; // ATUALIZADO: _rng -> Rng
-        baseColor.r = Mathf.Clamp01(baseColor.r + v);
-        baseColor.g = Mathf.Clamp01(baseColor.g + v);
-        baseColor.b = Mathf.Clamp01(baseColor.b + v);
-
-        // Lista local dos voxels (copiamos referências - room.spawnedVoxels pode ser modificado durante pooling, mas na prática está estável)
-        var voxels = room.spawnedVoxels;
-        if (voxels == null || voxels.Count == 0)
+        // 1) Gerar a sala base usando o método de fábrica da classe pai para criar o container.
+        var room = CreateRoomContainer(originGrid, size, -1);
+        if (room == null || room.container == null)
         {
-            _processingRooms.Remove(room);
-            yield break;
+            Debug.LogWarning("[BedroomGenerator] A criação do container da sala base falhou.");
+            return null;
         }
 
-        // Time budget
-        float budgetSec = Mathf.Max(1, postProcessFrameBudgetMilliseconds) / 1000f;
-        float batchStart = Time.realtimeSinceStartup;
-        int processedThisBatch = 0;
-
-        ProfilerBeginSampleSafe("Bedroom_PostProcess_Colorize");
-
-        // --- Colorização dos voxels (usando VoxelCache) ---
-        for (int i = 0; i < voxels.Count; i++)
+        // 2) Construir a estrutura básica (chão e paredes).
+        var occupancy = new HashSet<Vector3Int>();
+        // Chão
+        for (int x = 0; x < size.x; x++)
+        for (int z = 0; z < size.y; z++)
+            occupancy.Add(new Vector3Int(x, 0, z));
+        
+        // Paredes
+        for (int y = 0; y < roomHeight; y++)
         {
-            var go = voxels[i];
+            for (int x = 0; x < size.x; x++)
+            {
+                occupancy.Add(new Vector3Int(x, y, 0));
+                occupancy.Add(new Vector3Int(x, y, size.y - 1));
+            }
+            for (int z = 0; z < size.y; z++)
+            {
+                occupancy.Add(new Vector3Int(0, y, z));
+                occupancy.Add(new Vector3Int(size.x - 1, y, z));
+            }
+        }
+        
+        // Instanciar os voxels com base no mapa de ocupação
+        foreach (var pos in occupancy)
+        {
+            Vector3 worldPos = GridToWorld(originGrid) + new Vector3(pos.x * voxelSize, pos.y * voxelSize, pos.z * voxelSize);
+            var go = SpawnFromPool(voxelFundamentalPrefab, worldPos, Quaternion.identity, room.container);
+            if (go != null)
+            {
+                room.spawnedVoxels.Add(go);
+            }
+        }
+
+        // 3) Chamar a lógica de população de props.
+        PopulateRoomWithProps(room);
+
+        // 4) Retornar a RoomInstance já populada.
+        return room;
+    }
+
+    #endregion
+
+    /// <summary>
+    /// Lógica central para popular uma RoomInstance existente com os props definidos.
+    /// </summary>
+    private void PopulateRoomWithProps(RoomInstance room)
+    {
+        Vector3 baseWorldPos = GridToWorld(room.originGrid); 
+        int w = room.size.x;
+        int h = room.size.y;
+
+        bool[,] occupied = new bool[w, h];
+        bool[,] isWall = new bool[w, h];
+        bool[,] isDoor = new bool[w, h];
+
+        // Mapas de ocupação (apenas no nível do chão para props)
+        var floorVoxels = new Dictionary<Vector2Int, GameObject>();
+        foreach (var go in room.spawnedVoxels)
+        {
             if (go == null) continue;
 
-            // Use VoxelCache to apply color efficiently (avoids GetComponent each time).
-            try
+            Vector3 localPos = go.transform.position - baseWorldPos;
+            int gx = Mathf.RoundToInt(localPos.x / voxelSize);
+            int gy = Mathf.RoundToInt(localPos.z / voxelSize);
+            int g_y = Mathf.RoundToInt(localPos.y / voxelSize); // Coordenada Y (altura)
+
+            if (gx < 0 || gx >= w || gy < 0 || gy >= h) continue;
+
+            // Marcar como ocupado para props apenas se for um voxel no chão (ou algo sobre ele)
+            if (g_y == 0)
             {
-                var voxelCache = VoxelCache.GetOrAdd(go, ensureAutoInit: true);
-                // small jitter per-voxel to break repetition
-                int id = go.GetInstanceID();
-                float jitter = ((float)((id * 97) & 255) / 255f - 0.5f) * (colorVariance * 0.5f);
-                Color voxelColor = new Color(
-                    Mathf.Clamp01(baseColor.r + jitter),
-                    Mathf.Clamp01(baseColor.g + jitter),
-                    Mathf.Clamp01(baseColor.b + jitter),
-                    1f
+                occupied[gx, gy] = true;
+                floorVoxels[new Vector2Int(gx, gy)] = go;
+            }
+
+            // Heurística para identificar paredes no nível do chão
+            if (g_y > 0 && (gx == 0 || gx == w - 1 || gy == 0 || gy == h - 1))
+            {
+                isWall[gx, gy] = true;
+            }
+        }
+        
+        // --- Funções Helper Locais para Posicionamento ---
+
+        bool IsInBounds(int x, int y) => x >= 0 && x < w && y >= 0 && y < h;
+
+        bool IsNearbyDoor(int x, int y, int radius)
+        {
+            int startX = Math.Max(0, x - radius), endX = Math.Min(w - 1, x + radius);
+            int startY = Math.Max(0, y - radius), endY = Math.Min(h - 1, y + radius);
+            for (int ix = startX; ix <= endX; ix++)
+                for (int iy = startY; iy <= endY; iy++)
+                    if (isDoor[ix, iy]) return true;
+            return false;
+        }
+
+        bool IsAreaFree(int startX, int startY, int areaW, int areaH)
+        {
+            if (!IsInBounds(startX, startY) || !IsInBounds(startX + areaW - 1, startY + areaH - 1)) return false;
+            for (int ix = startX; ix < startX + areaW; ix++)
+                for (int iy = startY; iy < startY + areaH; iy++)
+                    if (occupied[ix, iy]) return false;
+            return true;
+        }
+
+        bool TryFindPlacementArea(int areaW, int areaH, bool mustBeNextToWall, out Vector2Int foundPos, out Quaternion wallRotation)
+        {
+            const int maxAttempts = 50;
+            wallRotation = Quaternion.identity;
+
+            for (int i = 0; i < maxAttempts; i++)
+            {
+                int gx = _localRng.Next(1, w - areaW);
+                int gy = _localRng.Next(1, h - areaH);
+
+                if (!IsAreaFree(gx, gy, areaW, areaH) || IsNearbyDoor(gx + areaW / 2, gy + areaH / 2, 2)) continue;
+
+                if (mustBeNextToWall)
+                {
+                    if (IsInBounds(gx - 1, gy) && isWall[gx - 1, gy]) wallRotation = Quaternion.LookRotation(Vector3.right);
+                    else if (IsInBounds(gx + areaW, gy) && isWall[gx + areaW, gy]) wallRotation = Quaternion.LookRotation(Vector3.left);
+                    else if (IsInBounds(gx, gy - 1) && isWall[gx, gy - 1]) wallRotation = Quaternion.LookRotation(Vector3.forward);
+                    else if (IsInBounds(gx, gy + areaH) && isWall[gx, gy + areaH]) wallRotation = Quaternion.LookRotation(Vector3.back);
+                    else continue;
+                }
+
+                foundPos = new Vector2Int(gx, gy);
+                return true;
+            }
+
+            foundPos = Vector2Int.zero;
+            return false;
+        }
+        
+        // --- Sequência de Posicionamento de Props ---
+        
+        foreach (var prop in roomProps)
+        {
+            if (prop.prefab == null || _localRng.NextDouble() > prop.placementChance) continue;
+
+            int propW = prop.size.x > 0 ? prop.size.x : 1;
+            int propH = prop.size.y > 0 ? prop.size.y : 1;
+
+            if (TryFindPlacementArea(propW, propH, prop.placeOnWall, out var foundPos, out var wallRot))
+            {
+                Quaternion finalRotation = wallRot;
+                if (!prop.placeOnWall && prop.randomRotation)
+                {
+                    finalRotation = Quaternion.Euler(0, 90f * _localRng.Next(0, 4), 0);
+                }
+                
+                Vector3 centerPos = baseWorldPos + new Vector3(
+                    (foundPos.x + (propW - 1) * 0.5f) * voxelSize,
+                    0f,
+                    (foundPos.y + (propH - 1) * 0.5f) * voxelSize
                 );
 
-                voxelCache.ApplyColor(voxelColor);
-            }
-            catch (Exception)
-            {
-                // Fallback: se algo falhar no cache, tente o caminho antigo (silencioso)
-                var rend = go.GetComponent<Renderer>();
-                if (rend != null)
+                var spawnedProp = SpawnFromPool(prop.prefab, centerPos, finalRotation, room.container);
+                if (spawnedProp == null) spawnedProp = Instantiate(prop.prefab, centerPos, finalRotation, room.container);
+
+                if (spawnedProp.GetComponent<PoolableObject>() == null)
                 {
-                    var mpb = new MaterialPropertyBlock();
-                    if (rend.sharedMaterial != null && rend.sharedMaterial.HasProperty("_BaseColor"))
-                        mpb.SetColor("_BaseColor", baseColor);
-                    else
-                        mpb.SetColor("_Color", baseColor);
-                    rend.SetPropertyBlock(mpb);
+                    var tag = spawnedProp.AddComponent<PoolableObject>();
+                    tag.OriginalPrefab = prop.prefab;
                 }
-            }
 
-            // respect time-slicing logic afterwards (unchanged)...
-            processedThisBatch++;
-            if (postProcessMaxPerBatch > 0 && processedThisBatch >= postProcessMaxPerBatch)
-            {
-                processedThisBatch = 0;
-                batchStart = Time.realtimeSinceStartup;
-                yield return null;
-            }
-            if ((Time.realtimeSinceStartup - batchStart) >= budgetSec)
-            {
-                processedThisBatch = 0;
-                batchStart = Time.realtimeSinceStartup;
-                yield return null;
+                room.spawnedProps.Add(spawnedProp);
+                
+                // Marca a área como ocupada para os próximos props
+                for (int ix = foundPos.x; ix < foundPos.x + propW; ix++)
+                    // >>> CORREÇÃO APLICADA NA LINHA ABAIXO <<<
+                    for (int iy = foundPos.y; iy < foundPos.y + propH; iy++)
+                        if (IsInBounds(ix, iy)) occupied[ix, iy] = true;
             }
         }
-
-        ProfilerEndSampleSafe();
-
-        // --- Colocação de props ---
-        ProfilerBeginSampleSafe("Bedroom_PostProcess_PlaceProps");
-
-        // determina candidatos de posicionamento (simples: pontos no chão próximos ao centro e nas paredes)
-        var candidates = new List<Vector3>(64);
-        Vector3 roomOrigin = GridToWorld(room.originGrid);
-
-        // floor cell positions
-        int w = room.size.x;
-        int d = room.size.y;
-        for (int x = 0; x < w; x++)
-            for (int z = 0; z < d; z++)
-            {
-                // skip immediate perimeter if preferir
-                bool isPerimeter = (x == 0 || x == w - 1 || z == 0 || z == d - 1);
-                Vector3 p = roomOrigin + new Vector3(x * voxelSize, 0f, z * voxelSize);
-                // prefer interior points (lower chance for perimeter)
-                if (!isPerimeter || UnityEngine.Random.value > 0.7f) candidates.Add(p);
-            }
-
-        // embaralha candidatos (Fisher-Yates)
-        for (int i = 0; i < candidates.Count; i++)
+        
+        // Otimização: Desativa sombras nos props gerados para melhorar performance
+        foreach (var p in room.spawnedProps)
         {
-            int j = UnityEngine.Random.Range(i, candidates.Count);
-            var tmp = candidates[i]; candidates[i] = candidates[j]; candidates[j] = tmp;
-        }
-
-        int placedProps = 0;
-        float placeBatchStart = Time.realtimeSinceStartup;
-        int placeProcessed = 0;
-
-        for (int i = 0; i < candidates.Count && placedProps < maxPropsPerRoom; i++)
-        {
-            if (furniturePrefabs == null || furniturePrefabs.Length == 0) break;
-            if (UnityEngine.Random.value > propPlacementChance) continue;
-
-            // spawn random furniture prefab
-            var prefab = furniturePrefabs[UnityEngine.Random.Range(0, furniturePrefabs.Length)];
-            if (prefab == null) continue;
-
-            Vector3 pos = candidates[i] + new Vector3(0f, 0f, 0f); // em cima do chão; o prefab deve ter pivot adequado
-            Quaternion rot = Quaternion.identity;
-
-            // opcional: se a posição for próxima a uma parede, rotacione o prop para encarar a sala
-            // detecta distância à borda mais próxima
-            float left = (pos.x - roomOrigin.x) / voxelSize;
-            float right = ((roomOrigin.x + (w - 1) * voxelSize) - pos.x) / voxelSize;
-            float front = (pos.z - roomOrigin.z) / voxelSize;
-            float back = ((roomOrigin.z + (d - 1) * voxelSize) - pos.z) / voxelSize;
-            float minDist = Mathf.Min(left, right, front, back);
-
-            if (minDist <= 1.2f)
+            if (p == null) continue;
+            var renderers = p.GetComponentsInChildren<Renderer>(true);
+            foreach (var r in renderers)
             {
-                if (minDist == left) rot = Quaternion.Euler(0f, 90f, 0f);
-                else if (minDist == right) rot = Quaternion.Euler(0f, -90f, 0f);
-                else if (minDist == front) rot = Quaternion.Euler(0f, 0f, 0f);
-                else rot = Quaternion.Euler(0f, 180f, 0f);
-            }
-            else
-            {
-                rot = Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f);
-            }
-
-            var spawned = SpawnFromPool(prefab, pos + new Vector3(0f, 0f, 0f), rot, room.container);
-            if (spawned != null)
-            {
-                room.spawnedProps.Add(spawned);
-                placedProps++;
-            }
-
-            placeProcessed++;
-            if ((Time.realtimeSinceStartup - placeBatchStart) >= budgetSec || placeProcessed >= postProcessMaxPerBatch)
-            {
-                placeProcessed = 0;
-                placeBatchStart = Time.realtimeSinceStartup;
-                yield return null;
+                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             }
         }
-
-        ProfilerEndSampleSafe();
-
-        // finalizações
-        _processingRooms.Remove(room);
-
-        yield break;
-    }
-
-    // ---------- Utilities ----------
-    // Pequenas wrappers para inserir Profiler samples sem obrigar a diretiva UNITY_PROFILER
-    private void ProfilerBeginSampleSafe(string name)
-    {
-#if UNITY_PROFILER || UNITY_EDITOR
-        try { UnityEngine.Profiling.Profiler.BeginSample(name); } catch { }
-#endif
-    }
-    private void ProfilerEndSampleSafe()
-    {
-#if UNITY_PROFILER || UNITY_EDITOR
-        try { UnityEngine.Profiling.Profiler.EndSample(); } catch { }
-#endif
     }
 }

@@ -63,9 +63,9 @@ public sealed class RoomTriggerController : MonoBehaviour
     [Tooltip("Enviar também um SendMessageUpwards(\"OnRoomLockdownRequested\", roomIndex).")]
     [SerializeField] private bool sendMessageUpwardsOnLockdown = false;
 
-    [Header("Eventos")]
     [System.Serializable] public class IntEvent : UnityEvent<int> { }
 
+    [Header("Eventos")]
     [Tooltip("Disparado quando o jogador entra e o lockdown deve acontecer (envia roomIndex). Conecte no GameFlowManager.")]
     [SerializeField] private IntEvent onLockdownRequest = new IntEvent();
 

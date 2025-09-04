@@ -196,7 +196,7 @@ public class VoxelFaceController : BaseVoxel
     {
         EnsureInitialized();
         // ensure all microvoxels are returned if object disabled
-        // ClearAllFacesImmediate(); // ESTA LINHA FOI REMOVIDA/COMENTADA PARA CORRIGIR O ERRO.
+        ClearAllFacesImmediate();
     }
     #endregion
     
@@ -266,71 +266,53 @@ public class VoxelFaceController : BaseVoxel
     /// - immediate: se true, gera todas as microvoxels imediatamente (pode causar spike).
     /// - gradualChunksPerFrame: quantos microvoxels processar por frame quando gerar gradualmente.
     /// </summary>
-    // =======================================================================
-    // INÍCIO DA CORREÇÃO: MÉTODO ApplyFaceMask SUBSTITUÍDO
-    // =======================================================================
     public void ApplyFaceMask(Face mask, bool immediate, int gradualChunksPerFrame = 64)
     {
         EnsureInitialized();
+        if (_currentMask == mask) return;
 
-        // Se a máscara que queremos aplicar já for a atual, não faz nada.
-        if (_currentMask == mask && Application.isPlaying) return;
-
-        // --- CORREÇÃO ADICIONADA ---
-        // Trata o caso 'Face.None' de forma especial e prioritária.
-        // Se a máscara for 'None', a intenção é criar um espaço vazio.
-        // Simplesmente limpamos todos os microvoxels e saímos do método.
-        if (mask == Face.None)
-        {
-            if (_generationCoroutine != null) StopCoroutine(_generationCoroutine);
-            ClearAllMicroVoxelsImmediate();
-            _currentMask = mask;
-            return;
-        }
-        // --- FIM DA CORREÇÃO ADICIONADA ---
-
-        // Decide qual modo usar (RendererGroups ou MicroVoxels)
+        // Decide qual modo usar
         var mode = DetermineMode();
 
-        // Se estiver usando grupos de renderers (modo de compatibilidade)
+        // If using renderer groups (compat mode)
         if (mode == GenerationMode.RendererGroups)
         {
             ApplyMaskToRendererGroups(mask);
-            // Garante que não haja microvoxels se mudamos para este modo
+            // release any microvoxels if present (we're switching to renderer groups)
             ClearAllMicroVoxelsImmediate();
             _currentMask = mask;
             return;
         }
 
-        // Lógica para o modo MicroVoxels
-        // Compara a máscara nova com a antiga para ver quais faces ligar/desligar.
+        // Mode MicroVoxels
+        // compute which faces should be enabled / disabled
         for (int i = 0; i < _faceOrder.Length; i++)
         {
             var face = _faceOrder[i];
             bool shouldEnable = (mask & face) != 0;
             bool wasEnabled = (_currentMask & face) != 0;
 
-            if (shouldEnable && !wasEnabled) // Face precisa ser criada
+            if (shouldEnable && !wasEnabled)
             {
+                // need to generate face
                 if (_generationCoroutine != null) StopCoroutine(_generationCoroutine);
                 if (immediate || !generateGradually)
                     GenerateFaceImmediate(i);
                 else
                     _generationCoroutine = StartCoroutine(GenerateFaceGradual(i, gradualChunksPerFrame));
             }
-            else if (!shouldEnable && wasEnabled) // Face precisa ser removida
+            else if (!shouldEnable && wasEnabled)
             {
+                // need to remove face
                 if (_generationCoroutine != null) StopCoroutine(_generationCoroutine);
-                // A remoção é sempre imediata pois é uma operação barata (retornar ao pool)
+                // immediate removal is cheap (return to pool)
                 RemoveFaceImmediate(i);
             }
+            // if no change skip
         }
 
         _currentMask = mask;
     }
-    // =======================================================================
-    // FIM DA CORREÇÃO
-    // =======================================================================
 
     public Face GetCurrentMask() => _currentMask;
     #endregion
@@ -438,7 +420,6 @@ public class VoxelFaceController : BaseVoxel
             mv.transform.localScale = Vector3.one * microVoxelLocalSize;
             mv.SetActive(true);
 
-    
             var mComp = mv.GetComponent<MicroVoxel>();
             if (mComp != null)
             {
@@ -563,7 +544,7 @@ public class VoxelFaceController : BaseVoxel
     }
 
     // Immediately clear faces and microvoxels (used on disable)
-    public void ClearAllFacesImmediate()
+    private void ClearAllFacesImmediate()
     {
         // disable renderer groups
         for (int i = 0; i < _groupEnabledCache.Length; i++)

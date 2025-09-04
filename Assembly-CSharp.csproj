@@ -93,6 +93,35 @@
     <Compile Include="Assets/_Scripts/VoxelSystem/MicroVoxel.cs" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Assets/_Scripts/Room/RoomStateManager.txt" />
+    <None Include="Assets/_Scripts/Player/PlayerMovement.txt" />
+    <None Include="Assets/_Scripts/Props/VoxelDoorController.txt" />
+    <None Include="Assets/_Scripts/Player/FlashlightControl.txt" />
+    <None Include="Assets/_Scripts/Player/IInteractable.txt" />
+    <None Include="Assets/_Scripts/Room/GameSignals.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/PoolableObject.txt" />
+    <None Include="Assets/_Scripts/Room/BaseRoomGenerator.txt" />
+    <None Include="Assets/_Scripts/Player/PlayerInteraction.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/SimpleVoxel.txt" />
+    <None Include="Assets/_Scripts/Player/BatteryComponent.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/VoxelPool.txt" />
+    <None Include="Assets/_Scripts/Room/RoomsData.txt" />
+    <None Include="Assets/_Scripts/Room/GameFlowManager.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/MicroVoxel.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/VoxelFaceContoller.txt" />
+    <None Include="Assets/_Scripts/Player/FlashlightInputHandler.txt" />
+    <None Include="Assets/_Scripts/Room/RoomTriggerController.txt" />
+    <None Include="Assets/_Scripts/Props/InteractableButton.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/BaseVoxel.txt" />
+    <None Include="Assets/_Scripts/Player/InteractionTrigger.txt" />
+    <None Include="Assets/_Scripts/Room/BedroomGenerator.txt" />
+    <None Include="Assets/_Scripts/Props/DoorAnchorInfo.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/VoxelCache.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/CompositeVoxel.txt" />
+    <None Include="Assets/_Scripts/Player/FlashlightConeGenerator.txt" />
+    <None Include="Assets/_Scripts/Room/SimpleRoomGenerator.txt" />
+  </ItemGroup>
+  <ItemGroup>
     <Reference Include="UnityEngine">
       <HintPath>/home/lucas/Unity/Hub/Editor/2022.3.62f1/Editor/Data/Managed/UnityEngine/UnityEngine.dll</HintPath>
       <Private>False</Private>

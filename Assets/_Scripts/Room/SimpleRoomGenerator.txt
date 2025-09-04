@@ -5,8 +5,6 @@
 // - Aplica inicialização e otimização de faces automaticamente (correção crítica).
 // - Usa PrefabUtility.InstantiatePrefab quando possível (mantém ligação ao prefab).
 // - Suporta Undo e marca a cena como suja.
-// - ADICIONADO: Cria um "ExitAnchor" no local da porta para integração com o BaseRoomGenerator.
-// - ALTERADO: Anexa o componente DoorAnchorInfo ao ExitAnchor com as dimensões da porta.
 using System;
 using System.Linq;
 using System.Reflection;
@@ -278,10 +276,6 @@ public class SimpleRoomEditorWindow : EditorWindow
                     Vector3 localPos = new Vector3(x * voxelSize, y * voxelSize, z * voxelSize);
                     go.transform.localPosition = localPos;
                     go.transform.localRotation = Quaternion.identity;
-                    
-                    // --- CÓDIGO A SER ADICIONADO ---
-                    Debug.Log($"[SimpleRoomGenerator] VoxelPrefab '{go.name}' posicionado no mundo em X: {go.transform.position.x}, Y: {go.transform.position.y}, Z: {go.transform.position.z}");
-                    // --- FIM DO CÓDIGO ---
 
                     // *** INÍCIO DA NOVA CORREÇÃO SIMPLIFICADA ***
                     try
@@ -323,71 +317,6 @@ public class SimpleRoomEditorWindow : EditorWindow
                 } // x
             } // z
         } // y
-
-        // =======================================================================
-        // INÍCIO DA ALTERAÇÃO: Criar o ExitAnchor para a porta
-        // =======================================================================
-        if (doorEnabled)
-        {
-            // Calcula o ponto de início da porta na parede
-            int wallLength = (doorWall == DoorWall.North || doorWall == DoorWall.South) ? width : depth;
-            int start = 0;
-            if (doorCentered)
-            {
-                start = Mathf.FloorToInt((wallLength - doorWidth) / 2f);
-            }
-            else
-            {
-                start = doorOffset;
-            }
-            start = Mathf.Clamp(start, 0, Mathf.Max(0, wallLength - doorWidth));
-
-            // Calcula a posição local e rotação do centro da porta
-            Vector3 doorCenterLocalPos = Vector3.zero;
-            Quaternion doorRotation = Quaternion.identity;
-            float halfDoorWidth = (doorWidth / 2f - 0.5f) * voxelSize;
-            float doorHeightOffset = (doorHeight / 2f - 0.5f) * voxelSize;
-
-            switch (doorWall)
-            {
-                case DoorWall.South: // Parede Z=0
-                    doorCenterLocalPos = new Vector3((start * voxelSize) + halfDoorWidth, doorHeightOffset, 0);
-                    doorRotation = Quaternion.Euler(0, 0, 0);
-                    break;
-                case DoorWall.North: // Parede Z=depth-1
-                    doorCenterLocalPos = new Vector3((start * voxelSize) + halfDoorWidth, doorHeightOffset, (depth - 1) * voxelSize);
-                    doorRotation = Quaternion.Euler(0, 180, 0);
-                    break;
-                case DoorWall.West: // Parede X=0
-                    doorCenterLocalPos = new Vector3(0, doorHeightOffset, (start * voxelSize) + halfDoorWidth);
-                    doorRotation = Quaternion.Euler(0, 90, 0);
-                    break;
-                case DoorWall.East: // Parede X=width-1
-                    doorCenterLocalPos = new Vector3((width - 1) * voxelSize, doorHeightOffset, (start * voxelSize) + halfDoorWidth);
-                    doorRotation = Quaternion.Euler(0, -90, 0);
-                    break;
-            }
-
-            var anchorGO = new GameObject("ExitAnchor");
-            Undo.RegisterCreatedObjectUndo(anchorGO, "Create Door Anchor");
-            anchorGO.transform.SetParent(containerGO.transform, false);
-            anchorGO.transform.localPosition = doorCenterLocalPos;
-            anchorGO.transform.localRotation = doorRotation;
-            
-            // =======================================================================
-            // INÍCIO DO BLOCO ADICIONADO
-            // =======================================================================
-            // "Anexa" as informações do tamanho da porta ao anchor.
-            var anchorInfo = anchorGO.AddComponent<DoorAnchorInfo>();
-            anchorInfo.doorWidth = this.doorWidth;
-            anchorInfo.doorHeight = this.doorHeight;
-            // =======================================================================
-            // FIM DO BLOCO ADICIONADO
-            // =======================================================================
-        }
-        // =======================================================================
-        // FIM DA ALTERAÇÃO
-        // =======================================================================
 
         // Final touches: select container and mark scene dirty
         Selection.activeGameObject = containerGO;
