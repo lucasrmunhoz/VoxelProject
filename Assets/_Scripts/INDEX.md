@@ -1,7 +1,7 @@
 # Scripts RAW Index
 
 - **Árvore no GitHub**: https://github.com/lucasrmunhoz/VoxelProject/tree/main/Assets/_Scripts
-- **Gerado em**: 2025-09-05 01:47:37
+- **Gerado em**: 2025-09-05 12:05:17
 
 
 ## Player
@@ -36,6 +36,7 @@
 
 - [BaseVoxel.txt](https://raw.githubusercontent.com/lucasrmunhoz/VoxelProject/main/Assets/_Scripts/VoxelSystem/BaseVoxel.txt)
 - [CompositeVoxel.txt](https://raw.githubusercontent.com/lucasrmunhoz/VoxelProject/main/Assets/_Scripts/VoxelSystem/CompositeVoxel.txt)
+- [IPoolable.txt](https://raw.githubusercontent.com/lucasrmunhoz/VoxelProject/main/Assets/_Scripts/VoxelSystem/IPoolable.txt)
 - [MicroVoxel.txt](https://raw.githubusercontent.com/lucasrmunhoz/VoxelProject/main/Assets/_Scripts/VoxelSystem/MicroVoxel.txt)
 - [PoolableObject.txt](https://raw.githubusercontent.com/lucasrmunhoz/VoxelProject/main/Assets/_Scripts/VoxelSystem/PoolableObject.txt)
 - [SimpleVoxel.txt](https://raw.githubusercontent.com/lucasrmunhoz/VoxelProject/main/Assets/_Scripts/VoxelSystem/SimpleVoxel.txt)

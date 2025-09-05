@@ -1,6 +1,7 @@
 // GameFlowManager.cs
 // Gerenciador do fluxo/streaming de salas.
-// PR-01: usa exclusivamente RoomsData.RoomPlan como contrato (remove duplicidade de tipos).
+// PR-01 original: usava alias para RoomsData.RoomPlan; nesta versão removemos o alias
+// para compatibilidade com os tipos em escopo global definidos em RoomsData.
 
 using System;
 using System.Collections;
@@ -8,12 +9,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
+
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
-
-// Alias para consumir o contrato único de RoomsData
-using RoomPlan = RoomsData.RoomPlan;
 
 [DisallowMultipleComponent]
 public class GameFlowManager : MonoBehaviour
@@ -60,10 +59,9 @@ public class GameFlowManager : MonoBehaviour
     public bool verbose = false;
 
     // -------------------- Estado / tipos auxiliares --------------------
-
     private System.Random _rng;
 
-    // Layout planejado do mapa (contrato único RoomsData.RoomPlan)
+    // Layout planejado do mapa (contrato: RoomPlan em escopo global)
     private readonly List<RoomPlan> _roomPlans = new List<RoomPlan>();
 
     // Tiles ocupados do grid de planejamento
@@ -74,9 +72,9 @@ public class GameFlowManager : MonoBehaviour
     {
         public RoomPlan plan;
         public Transform container;
-        public int index;           // mantido por compat (usa plan.id)
+        public int index;          // mantido por compat (usa plan.id)
         public DateTime loadedAt;
-        public int usageTick;       // para LRU
+        public int usageTick;      // para LRU
     }
 
     // MRU na frente
@@ -91,13 +89,12 @@ public class GameFlowManager : MonoBehaviour
     private bool _isGenerating = false;
     private int _usageCounter = 0;
 
-    // Eventos (mantém assinaturas usadas no código)
+    // Eventos
     public event Action OnMapReady;
     public event Action<RoomPlan, Transform> OnRoomLoaded;
     public event Action<RoomPlan> OnRoomUnloaded;
 
     // -------------------- Unity --------------------
-
     private void Awake()
     {
         if (seed == 0) seed = Environment.TickCount;
@@ -125,7 +122,6 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Mapeamento / layout --------------------
-
     public void MapAllRoomsLayout()
     {
         _roomPlans.Clear();
@@ -153,12 +149,12 @@ public class GameFlowManager : MonoBehaviour
                 {
                     MarkArea(origin, size);
 
-                    // PR-01: construir RoomsData.RoomPlan (id, gridOrigin, size, height, doors, generator, seed)
+                    // Construir RoomPlan (id, gridOrigin, size, height, doors, generator, seed)
                     var plan = new RoomPlan(
                         id: i,
                         gridOrigin: origin,
                         size: size,
-                        height: 3,                  // altura padrão; geradores especializados podem sobrescrever
+                        height: 3,               // altura padrão; geradores especializados podem sobrescrever
                         entry: default,
                         exit: default,
                         generatorIndex: 0,
@@ -169,6 +165,7 @@ public class GameFlowManager : MonoBehaviour
 
                     // avança cursor heurístico para borda aleatória da sala atual
                     cursor = ChooseRandomEdgeGrid(origin, size);
+
                     placed = true;
                     break;
                 }
@@ -176,12 +173,14 @@ public class GameFlowManager : MonoBehaviour
 
             if (!placed)
             {
-                if (verbose) Debug.LogWarning($"[GameFlowManager] Não foi possível posicionar a sala #{i} após {maxPlacementAttemptsPerRoom} tentativas.");
+                if (verbose)
+                    Debug.LogWarning($"[GameFlowManager] Não foi possível posicionar a sala #{i} após {maxPlacementAttemptsPerRoom} tentativas.");
                 break;
             }
         }
 
-        if (verbose) Debug.Log($"[GameFlowManager] Mapeamento completo: {_roomPlans.Count} salas (seed={seed}).");
+        if (verbose)
+            Debug.Log($"[GameFlowManager] Mapeamento completo: {_roomPlans.Count} salas (seed={seed}).");
     }
 
     private Vector2Int RandomRoomSize()
@@ -202,7 +201,6 @@ public class GameFlowManager : MonoBehaviour
         };
 
         var dir = dirs[_rng.Next(0, dirs.Count)];
-
         Vector2Int offset = (dir.x != 0)
             ? new Vector2Int((dir.x > 0) ? size.x : -size.x, 0)
             : new Vector2Int(0, (dir.y > 0) ? size.y : -size.y);
@@ -217,7 +215,7 @@ public class GameFlowManager : MonoBehaviour
         switch (side)
         {
             case 0: return new Vector2Int(origin.x + size.x, origin.y + _rng.Next(0, size.y));
-            case 1: return new Vector2Int(origin.x - 1,      origin.y + _rng.Next(0, size.y));
+            case 1: return new Vector2Int(origin.x - 1,         origin.y + _rng.Next(0, size.y));
             case 2: return new Vector2Int(origin.x + _rng.Next(0, size.x), origin.y + size.y);
             default:return new Vector2Int(origin.x + _rng.Next(0, size.x), origin.y - 1);
         }
@@ -229,7 +227,6 @@ public class GameFlowManager : MonoBehaviour
             for (int y = origin.y; y < origin.y + size.y; y++)
                 if (_occupiedTiles.Contains(new Vector2Int(x, y)))
                     return false;
-
         return true;
     }
 
@@ -242,7 +239,7 @@ public class GameFlowManager : MonoBehaviour
 
     // -------------------- Controle de fluxo --------------------
 
-    /// <summary>Inicia o fluxo procedural a partir de um índice (ex.: 0).</summary>
+    /// Inicia o fluxo procedural a partir de um índice (ex.: 0).
     public void StartProceduralFlow(int startIndex = 0)
     {
         if (_roomPlans == null || _roomPlans.Count == 0)
@@ -332,7 +329,6 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Registro / LRU --------------------
-
     private void RegisterActiveRoom(RoomPlan plan, Transform container)
     {
         if (container == null) return;
@@ -365,7 +361,8 @@ public class GameFlowManager : MonoBehaviour
         _activeRooms.AddFirst(ar);
         _byContainer[container] = ar;
 
-        if (verbose) Debug.Log($"[GameFlowManager] Sala registrada: id={plan.id}, container={container.name}");
+        if (verbose)
+            Debug.Log($"[GameFlowManager] Sala registrada: id={plan.id}, container={container.name}");
 
         EnforceActiveRoomLimit();
     }
@@ -412,7 +409,6 @@ public class GameFlowManager : MonoBehaviour
             _byContainer.Remove(toUnload.container);
 
         _activeRooms.Remove(toUnload);
-
         OnRoomUnloaded?.Invoke(toUnload.plan);
     }
 
@@ -423,10 +419,9 @@ public class GameFlowManager : MonoBehaviour
         Type genType = baseRoomGenerator.GetType();
 
         // Tenta assinaturas conhecidas na ordem:
-        // 1) ClearRoom(Transform)  2) ClearRoom(GameObject)
-        MethodInfo m =
-            genType.GetMethod("ClearRoom", new[] { typeof(Transform) }) ??
-            genType.GetMethod("ClearRoom", new[] { typeof(GameObject) });
+        // 1) ClearRoom(Transform) 2) ClearRoom(GameObject)
+        MethodInfo m = genType.GetMethod("ClearRoom", new[] { typeof(Transform) })
+                      ?? genType.GetMethod("ClearRoom", new[] { typeof(GameObject) });
 
         if (m != null)
         {
@@ -449,7 +444,6 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Invocação do gerador (reflexão robusta) --------------------
-
     private void InvokeBaseGeneratorForPlan(RoomPlan plan)
     {
         if (baseRoomGenerator == null)
@@ -465,6 +459,7 @@ public class GameFlowManager : MonoBehaviour
             {
                 int height = TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3);
                 bool gradual = TryGetFieldOrPropBool(genType, baseRoomGenerator, "generateGradually", true);
+
                 m_sig1.Invoke(baseRoomGenerator, new object[] { plan.gridOrigin, plan.size, height, gradual });
                 return;
             }
@@ -487,10 +482,18 @@ public class GameFlowManager : MonoBehaviour
         var m_sig3a = genType.GetMethod("GenerateRoom", new[] { typeof(Vector2Int) });
         if (m_sig3a != null)
         {
-            try { m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.gridOrigin }); return; }
+            try
+            {
+                m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.gridOrigin });
+                return;
+            }
             catch
             {
-                try { m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.size }); return; }
+                try
+                {
+                    m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.size });
+                    return;
+                }
                 catch { /* fallback */ }
             }
         }
@@ -500,9 +503,8 @@ public class GameFlowManager : MonoBehaviour
         if (m0 != null)
         {
             FieldOrPropSet(genType, baseRoomGenerator, "roomOriginGrid", plan.gridOrigin);
-            FieldOrPropSet(genType, baseRoomGenerator, "roomSize",       plan.size);
-            FieldOrPropSet(genType, baseRoomGenerator, "roomHeight",
-                TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3));
+            FieldOrPropSet(genType, baseRoomGenerator, "roomSize", plan.size);
+            FieldOrPropSet(genType, baseRoomGenerator, "roomHeight", TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3));
 
             m0.Invoke(baseRoomGenerator, null);
             return;
@@ -560,7 +562,6 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Descoberta do container --------------------
-
     // Heurística: procura por "Room_{x}_{y}" primeiro sob roomsRoot, depois globalmente.
     private Transform FindGeneratedRoomContainer(RoomPlan plan)
     {
@@ -574,13 +575,13 @@ public class GameFlowManager : MonoBehaviour
 
             var all = roomsRoot.GetComponentsInChildren<Transform>(true);
             foreach (var t in all)
-                if (t.name.StartsWith(namePrefix)) return t;
+                if (t.name.StartsWith(namePrefix))
+                    return t;
         }
 
         // busca global
         var global = GameObject.FindObjectsOfType<Transform>()
-            .FirstOrDefault(t => t.name.StartsWith("Room_") &&
-                                 t.name.Contains($"{plan.gridOrigin.x}_{plan.gridOrigin.y}"));
+            .FirstOrDefault(t => t.name.StartsWith("Room_") && t.name.Contains($"{plan.gridOrigin.x}_{plan.gridOrigin.y}"));
         if (global != null) return global;
 
         // fallback: último Room_* não registrado
@@ -596,8 +597,7 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Triggers do jogador --------------------
-
-    /// <summary>Chame quando o jogador entrar no container da sala.</summary>
+    /// Chame quando o jogador entrar no container da sala.
     public void OnPlayerEnterRoom(Transform roomContainer)
     {
         if (roomContainer == null) return;
@@ -618,6 +618,7 @@ public class GameFlowManager : MonoBehaviour
         foreach (var c in comps)
         {
             if (c == null) continue;
+
             var t = c.GetType();
 
             var mClose = t.GetMethod("Close", BindingFlags.Public | BindingFlags.Instance);
@@ -635,7 +636,6 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Descarregamento por distância --------------------
-
     private void ManageUnloadByPlayerDistance()
     {
         if (playerTransform == null) return;
@@ -667,9 +667,7 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Utilidades --------------------
-
     public IReadOnlyList<RoomPlan> GetAllPlans() => _roomPlans.AsReadOnly();
-
     public int GetActiveRoomCount() => _activeRooms.Count;
 
     public void ProceedToNext()

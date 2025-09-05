@@ -84,6 +84,7 @@
     <Compile Include="Assets/_Scripts/VoxelSystem/BaseVoxel.cs" />
     <Compile Include="Assets/_Scripts/Player/PlayerInteraction.cs" />
     <Compile Include="Assets/_Scripts/Room/RoomTriggerController.cs" />
+    <Compile Include="Assets/_Scripts/VoxelSystem/IPoolable.cs" />
     <Compile Include="Assets/_Scripts/Player/PlayerMovement.cs" />
     <Compile Include="Assets/_Scripts/Player/BatteryComponent.cs" />
     <Compile Include="Assets/_Scripts/Player/FlashlightControl.cs" />

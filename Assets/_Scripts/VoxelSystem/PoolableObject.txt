@@ -1,19 +1,17 @@
-// AUTOR: Gemini
-// DATA: 16 de Agosto de 2025
-// PROPÓSITO: Servir como uma "etiqueta" para objetos gerenciados pelo VoxelPool. (VERSÃO CORRIGIDA)
-// DESCRIÇÃO: Este script agora usa um campo público para ser visível no Inspector do Unity.
-
 using UnityEngine;
 
 /// <summary>
-/// Um componente "etiqueta" que identifica um GameObject como sendo reciclável
-/// e guarda uma referência ao seu prefab de origem para o sistema VoxelPool.
+/// Componente "etiqueta" para objetos gerenciados pelo VoxelPool.
+/// Guarda referência ao prefab de origem e expõe hooks opcionais via IPoolable.
 /// </summary>
-public class PoolableObject : MonoBehaviour
+public class PoolableObject : MonoBehaviour, IPoolable
 {
-    // #################### CORREÇÃO AQUI ####################
-    // Trocamos a "propriedade" { get; set; } por um "campo" público simples,
-    // que é o que o Inspector do Unity consegue exibir.
+    // Mantido como CAMPO público (não propriedade) para aparecer no Inspector.
     public GameObject OriginalPrefab;
-    // ######################################################
+
+    // ---- IPoolable (hooks opcionais – implementações vazias) ----
+    public void OnBeforeSpawn() { }
+    public void OnAfterSpawn()  { }
+    public void OnBeforeDespawn() { }
+    public void OnAfterDespawn()  { }
 }
