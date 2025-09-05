@@ -69,12 +69,8 @@ public sealed class DoorAnchorInfo : MonoBehaviour
     /// <summary>Altura máxima (inclusive, em voxels).</summary>
     public int YMax => yMax;
 
-    /// <summary>
-    /// Constrói um DoorRect com os mesmos parâmetros (em VOXELS).
-    /// Use isto para repassar ao gerador procedural.
-    /// </summary>
-    public DoorRect ToDoorRect()
-        => new DoorRect(side, offsetX, width, yMin, yMax);
+    /// <summary>Constrói um DoorRect com os mesmos parâmetros (em VOXELS) para repassar ao gerador.</summary>
+    public DoorRect ToDoorRect() => new DoorRect(side, offsetX, width, yMin, yMax);
 
     /// <summary>
     /// Retorna o par (tangente, normal) da parede no ESPAÇO LOCAL de RoomRoot,
@@ -84,17 +80,15 @@ public sealed class DoorAnchorInfo : MonoBehaviour
     {
         switch (s)
         {
-            case WallSide.North: tangent = Vector3.right;  normal = Vector3.forward;  break; // +Z
-            case WallSide.East:  tangent = Vector3.forward; normal = Vector3.right;    break; // +X
-            case WallSide.South: tangent = Vector3.left;    normal = Vector3.back;     break; // -Z
-            case WallSide.West:  tangent = Vector3.back;    normal = Vector3.left;     break; // -X
-            default:             tangent = Vector3.right;   normal = Vector3.forward;  break;
+            case WallSide.North: tangent = Vector3.right;   normal = Vector3.forward; break; // +Z
+            case WallSide.East:  tangent = Vector3.forward; normal = Vector3.right;   break; // +X
+            case WallSide.South: tangent = Vector3.left;    normal = Vector3.back;    break; // -Z
+            case WallSide.West:  tangent = Vector3.back;    normal = Vector3.left;    break; // -X
+            default:             tangent = Vector3.right;   normal = Vector3.forward; break;
         }
     }
 
-    /// <summary>
-    /// Converte a base local (tangente/normal) para o ESPAÇO MUNDIAL, usando RoomRoot.
-    /// </summary>
+    /// <summary>Converte a base local (tangente/normal) para o ESPAÇO MUNDIAL, usando RoomRoot.</summary>
     public void GetWallBasisWorld(out Vector3 tangentW, out Vector3 normalW)
     {
         GetWallBasisLocal(side, out var t, out var n);
@@ -103,9 +97,7 @@ public sealed class DoorAnchorInfo : MonoBehaviour
         normalW  = root.TransformDirection(n);
     }
 
-    /// <summary>
-    /// Retorna o vetor "up" mundial coerente com RoomRoot (ou world up se não houver).
-    /// </summary>
+    /// <summary>Retorna o vetor "up" mundial coerente com RoomRoot (ou world up se não houver).</summary>
     public Vector3 GetUpWorld()
     {
         var root = RoomRoot;
@@ -126,6 +118,7 @@ public sealed class DoorAnchorInfo : MonoBehaviour
         // Desenha um "quadro" da abertura para depuração visual no SceneView.
         // Assume que este transform marca o CENTRO aproximado da abertura.
         var center = transform.position;
+
         GetWallBasisWorld(out var tangentW, out var normalW);
         var upW = GetUpWorld();
 
@@ -136,11 +129,11 @@ public sealed class DoorAnchorInfo : MonoBehaviour
         // Construir um retângulo no plano da parede, centrado neste anchor.
         // Bordas no espaço mundial:
         Vector3 right = tangentW.normalized;
-        Vector3 up = upW.normalized;
-        Vector3 n = normalW.normalized;
+        Vector3 up    = upW.normalized;
+        Vector3 n     = normalW.normalized;
 
         Vector3 halfW = right * (w * 0.5f);
-        Vector3 halfH = up * (h * 0.5f);
+        Vector3 halfH = up    * (h * 0.5f);
 
         // Por segurança, desloca um pouco para fora da parede para evitar z-fighting.
         Vector3 slightOffset = n * (thickness * 0.5f);
@@ -163,7 +156,7 @@ public sealed class DoorAnchorInfo : MonoBehaviour
 
         // Texto (Editor only): informações rápidas
         UnityEditor.Handles.color = new Color(0f, 1f, 1f, 0.8f);
-        var label = $"DoorAnchorInfo\nSide: {side}\nOffsetX: {offsetX}  Width: {width}\nY: {yMin}..{yMax} (H={Height})";
+        var label = $"DoorAnchorInfo\nSide: {side}\nOffsetX: {offsetX} Width: {width}\nY: {yMin}..{yMax} (H={Height})";
         UnityEditor.Handles.Label(center + up * (h * 0.6f), label);
     }
 #endif

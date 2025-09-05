@@ -1,94 +1,100 @@
 // BedroomGenerator.cs
-// Autor: ChatGPT — gerador especializado "filho" de BaseRoomGenerator.
-// Versão: 2025-08-20 (Revisada para corrigir CS1061 e alinhar com padrão de BaseRoomGenerator)
-//
-// Propósito:
-//  - Corrigido o erro CS1061 ao adotar o padrão de geração correto.
-//  - Chamar CreateRoomContainer da classe base para criar a instância da sala.
-//  - Implementar a construção de chão e paredes, tornando o gerador autônomo.
-//  - Popular a sala com uma lista customizável de "props" (objetos).
-//  - Usar heurísticas rápidas e eficientes para escolher posições seguras para os props.
-//
-// Observações:
-//  - Este script herda de BaseRoomGenerator e estende sua funcionalidade.
-//  - Usa os métodos protegidos como SpawnFromPool e GridToWorld corretamente.
+// Especialista de geração de salas que herda de BaseRoomGenerator.
+// PR-01: passa a usar exclusivamente RoomsData.RoomPlan/RoomInstance/DoorRect/WallSide.
 
 using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-// Struct para definir as propriedades de um objeto a ser colocado na sala.
-[System.Serializable]
-public struct RoomProp
-{
-    public GameObject prefab;
-    public Vector2Int size;         // Tamanho em grid (ex: 2x3 para cama)
-    [Tooltip("Se verdadeiro, tenta posicionar adjacente a uma parede.")]
-    public bool placeOnWall;
-    [Tooltip("Se verdadeiro e não for de parede, aplica uma rotação aleatória em Y.")]
-    public bool randomRotation;
-    [Range(0f, 1f)] public float placementChance; // Probabilidade de este prop ser colocado
-}
+// === Tipos de contrato vêm de RoomsData ===
+// using WallSide; using DoorRect; using RoomPlan; using RoomInstance;
 
+[DisallowMultipleComponent]
 public class BedroomGenerator : BaseRoomGenerator
 {
     [Header("Seed / Random")]
-    [Tooltip("Seed determinística. 0 = aleatória por hora (não-determinística).")]
+    [Tooltip("0 = aleatória por hora (não determinística).")]
     public int randomSeed = 0;
 
     [Header("Room Structure")]
-    [Tooltip("Altura da sala em voxels.")]
-    [Min(1)] public int roomHeight = 3; // Campo adicionado para definir a altura das paredes.
+    [Tooltip("Altura da sala (em voxels).")]
+    [Min(1)] public int roomHeight = 3;
+
+    [Serializable]
+    public struct RoomProp
+    {
+        public GameObject prefab;
+        public Vector2Int size;                 // tamanho em grid (X,Z)
+        [Tooltip("Se verdadeiro, tenta encostar na parede.")]
+        public bool placeOnWall;
+        [Tooltip("Se verdadeiro e não for de parede, gira aleatoriamente em Y.")]
+        public bool randomRotation;
+        [Range(0f, 1f)] public float placementChance;
+    }
 
     [Header("Bedroom Prop List")]
     [SerializeField] private List<RoomProp> roomProps = new List<RoomProp>();
 
-    // RNG local para decisões de props, separado do RNG base.
+    // RNG local para props (separado do Base)
     private System.Random _localRng;
 
     private void Awake()
     {
-        int seed = (randomSeed == 0) ? (Environment.TickCount ^ GetInstanceID()) : (randomSeed ^ GetInstanceID());
+        int seed = (randomSeed == 0)
+            ? (Environment.TickCount ^ GetInstanceID())
+            : (randomSeed ^ GetInstanceID());
         _localRng = new System.Random(seed);
     }
 
-    #region GenerateRoom Overloads (Compatibilidade com GameFlowManager)
+    #region GenerateRoom Overloads (Compatíveis)
 
+    // Mantém assinaturas convenientes e retorna RoomsData.RoomInstance.
     public new RoomInstance GenerateRoom()
-    {
-        return GenerateRoom(roomOriginGrid, roomSize);
-    }
+        => GenerateRoom(roomOriginGrid, roomSize);
 
     public new RoomInstance GenerateRoom(Vector2Int originGrid)
     {
-        Vector2Int randomSize = new Vector2Int(
+        var randomSize = new Vector2Int(
             _localRng.Next(minRoomSize.x, maxRoomSize.x + 1),
             _localRng.Next(minRoomSize.y, maxRoomSize.y + 1)
         );
         return GenerateRoom(originGrid, randomSize);
     }
 
-    /// <summary>
-    /// Método principal que gera um quarto, construindo a base e depois populando com props.
-    /// </summary>
+    /// <summary>Método principal: constrói a casca da sala e popula com props.</summary>
     public new RoomInstance GenerateRoom(Vector2Int originGrid, Vector2Int size)
     {
-        // 1) Gerar a sala base usando o método de fábrica da classe pai para criar o container.
+        // 1) Cria container básico via Base (já registra e fornece roots de porta).
         var room = CreateRoomContainer(originGrid, size, -1);
-        if (room == null || room.container == null)
+        if (room == null || room.root == null)
         {
-            Debug.LogWarning("[BedroomGenerator] A criação do container da sala base falhou.");
+            Debug.LogWarning("[BedroomGenerator] Falha ao criar container da sala.");
             return null;
         }
 
-        // 2) Construir a estrutura básica (chão e paredes).
+        // 1.1) Preenche metadados mínimos no plano (opcional, útil para consumidores)
+        //      Usa DoorRect padrão; geradores mais avançados podem definir entry/exit reais depois.
+        room.plan = new RoomPlan(
+            id: -1,
+            gridOrigin: originGrid,
+            size: new Vector2Int(Mathf.Max(1, size.x), Mathf.Max(1, size.y)),
+            height: Mathf.Max(1, roomHeight),
+            entry: default, exit: default,
+            generatorIndex: 0,
+            randomSeed: randomSeed
+        );
+        room.builder = this;
+        room.voxelSize = voxelSize;
+
+        // 2) Construir estrutura básica: chão + paredes (sem arestas/quinas internas)
         var occupancy = new HashSet<Vector3Int>();
-        // Chão
+
+        // chão
         for (int x = 0; x < size.x; x++)
-        for (int z = 0; z < size.y; z++)
-            occupancy.Add(new Vector3Int(x, 0, z));
-        
-        // Paredes
+            for (int z = 0; z < size.y; z++)
+                occupancy.Add(new Vector3Int(x, 0, z));
+
+        // paredes (perímetro) até roomHeight
         for (int y = 0; y < roomHeight; y++)
         {
             for (int x = 0; x < size.x; x++)
@@ -102,170 +108,164 @@ public class BedroomGenerator : BaseRoomGenerator
                 occupancy.Add(new Vector3Int(size.x - 1, y, z));
             }
         }
-        
-        // Instanciar os voxels com base no mapa de ocupação
+
+        // 2.1) Instanciar voxels fundamentais conforme o mapa de ocupação
+        Vector3 baseWorld = GridToWorld(originGrid);
         foreach (var pos in occupancy)
         {
-            Vector3 worldPos = GridToWorld(originGrid) + new Vector3(pos.x * voxelSize, pos.y * voxelSize, pos.z * voxelSize);
-            var go = SpawnFromPool(voxelFundamentalPrefab, worldPos, Quaternion.identity, room.container);
+            Vector3 worldPos = baseWorld + new Vector3(pos.x * voxelSize, pos.y * voxelSize, pos.z * voxelSize);
+            var go = SpawnFromPool(voxelFundamentalPrefab, worldPos, Quaternion.identity, room.root);
             if (go != null)
-            {
-                room.spawnedVoxels.Add(go);
-            }
+                room.voxels.Add(go);
         }
 
-        // 3) Chamar a lógica de população de props.
+        room.built = true;
+
+        // 3) Popular com props
         PopulateRoomWithProps(room);
 
-        // 4) Retornar a RoomInstance já populada.
+        room.populated = true;
         return room;
     }
 
     #endregion
 
-    /// <summary>
-    /// Lógica central para popular uma RoomInstance existente com os props definidos.
-    /// </summary>
+    /// <summary>Popula a RoomInstance com props respeitando ocupação e paredes.</summary>
     private void PopulateRoomWithProps(RoomInstance room)
     {
-        Vector3 baseWorldPos = GridToWorld(room.originGrid); 
-        int w = room.size.x;
-        int h = room.size.y;
+        if (room == null || room.root == null) return;
 
-        bool[,] occupied = new bool[w, h];
-        bool[,] isWall = new bool[w, h];
-        bool[,] isDoor = new bool[w, h];
+        // Dimensões do plano (X,Z) vêm do plan.size (definido acima)
+        int w = Mathf.Max(1, room.plan.size.x);
+        int d = Mathf.Max(1, room.plan.size.y);
 
-        // Mapas de ocupação (apenas no nível do chão para props)
-        var floorVoxels = new Dictionary<Vector2Int, GameObject>();
-        foreach (var go in room.spawnedVoxels)
+        // Mapa de ocupação no nível do chão para props
+        bool[,] occupied = new bool[w, d];
+        bool[,] isWall   = new bool[w, d];
+        bool[,] isDoor   = new bool[w, d]; // reservado para futuras integrações com portas reais
+
+        // Indexa voxels já gerados para derivar ocupação e paredes (nível Y=0)
+        Vector3 baseWorldPos = GridToWorld(room.plan.gridOrigin);
+        foreach (var go in room.voxels)
         {
             if (go == null) continue;
 
-            Vector3 localPos = go.transform.position - baseWorldPos;
-            int gx = Mathf.RoundToInt(localPos.x / voxelSize);
-            int gy = Mathf.RoundToInt(localPos.z / voxelSize);
-            int g_y = Mathf.RoundToInt(localPos.y / voxelSize); // Coordenada Y (altura)
+            Vector3 local = go.transform.position - baseWorldPos;
+            int gx = Mathf.RoundToInt(local.x / voxelSize);
+            int gz = Mathf.RoundToInt(local.z / voxelSize);
+            int gy = Mathf.RoundToInt(local.y / voxelSize);
 
-            if (gx < 0 || gx >= w || gy < 0 || gy >= h) continue;
+            if (gx < 0 || gx >= w || gz < 0 || gz >= d) continue;
 
-            // Marcar como ocupado para props apenas se for um voxel no chão (ou algo sobre ele)
-            if (g_y == 0)
+            if (gy == 0)
             {
-                occupied[gx, gy] = true;
-                floorVoxels[new Vector2Int(gx, gy)] = go;
+                occupied[gx, gz] = true;
             }
 
-            // Heurística para identificar paredes no nível do chão
-            if (g_y > 0 && (gx == 0 || gx == w - 1 || gy == 0 || gy == h - 1))
+            if (gy > 0 && (gx == 0 || gx == w - 1 || gz == 0 || gz == d - 1))
             {
-                isWall[gx, gy] = true;
+                isWall[gx, gz] = true;
             }
         }
-        
-        // --- Funções Helper Locais para Posicionamento ---
 
-        bool IsInBounds(int x, int y) => x >= 0 && x < w && y >= 0 && y < h;
+        // Helpers locais
+        bool InBounds(int x, int z) => (uint)x < (uint)w && (uint)z < (uint)d;
 
-        bool IsNearbyDoor(int x, int y, int radius)
+        bool IsNearbyDoor(int x, int z, int radius)
         {
-            int startX = Math.Max(0, x - radius), endX = Math.Min(w - 1, x + radius);
-            int startY = Math.Max(0, y - radius), endY = Math.Min(h - 1, y + radius);
-            for (int ix = startX; ix <= endX; ix++)
-                for (int iy = startY; iy <= endY; iy++)
-                    if (isDoor[ix, iy]) return true;
+            int sx = Mathf.Max(0, x - radius), ex = Mathf.Min(w - 1, x + radius);
+            int sz = Mathf.Max(0, z - radius), ez = Mathf.Min(d - 1, z + radius);
+            for (int ix = sx; ix <= ex; ix++)
+                for (int iz = sz; iz <= ez; iz++)
+                    if (isDoor[ix, iz]) return true;
             return false;
         }
 
-        bool IsAreaFree(int startX, int startY, int areaW, int areaH)
+        bool IsAreaFree(int x, int z, int aw, int ad)
         {
-            if (!IsInBounds(startX, startY) || !IsInBounds(startX + areaW - 1, startY + areaH - 1)) return false;
-            for (int ix = startX; ix < startX + areaW; ix++)
-                for (int iy = startY; iy < startY + areaH; iy++)
-                    if (occupied[ix, iy]) return false;
+            if (!InBounds(x, z) || !InBounds(x + aw - 1, z + ad - 1)) return false;
+            for (int ix = x; ix < x + aw; ix++)
+                for (int iz = z; iz < z + ad; iz++)
+                    if (occupied[ix, iz]) return false;
             return true;
         }
 
-        bool TryFindPlacementArea(int areaW, int areaH, bool mustBeNextToWall, out Vector2Int foundPos, out Quaternion wallRotation)
+        bool TryFindPlacementArea(int aw, int ad, bool mustBeOnWall, out Vector2Int pos, out Quaternion wallRot)
         {
-            const int maxAttempts = 50;
-            wallRotation = Quaternion.identity;
+            const int MAX_ATTEMPTS = 50;
+            wallRot = Quaternion.identity;
 
-            for (int i = 0; i < maxAttempts; i++)
+            for (int i = 0; i < MAX_ATTEMPTS; i++)
             {
-                int gx = _localRng.Next(1, w - areaW);
-                int gy = _localRng.Next(1, h - areaH);
+                int gx = _localRng.Next(1, Math.Max(1, w - aw));
+                int gz = _localRng.Next(1, Math.Max(1, d - ad));
 
-                if (!IsAreaFree(gx, gy, areaW, areaH) || IsNearbyDoor(gx + areaW / 2, gy + areaH / 2, 2)) continue;
+                if (!IsAreaFree(gx, gz, aw, ad)) continue;
+                if (IsNearbyDoor(gx + aw / 2, gz + ad / 2, 2)) continue;
 
-                if (mustBeNextToWall)
+                if (mustBeOnWall)
                 {
-                    if (IsInBounds(gx - 1, gy) && isWall[gx - 1, gy]) wallRotation = Quaternion.LookRotation(Vector3.right);
-                    else if (IsInBounds(gx + areaW, gy) && isWall[gx + areaW, gy]) wallRotation = Quaternion.LookRotation(Vector3.left);
-                    else if (IsInBounds(gx, gy - 1) && isWall[gx, gy - 1]) wallRotation = Quaternion.LookRotation(Vector3.forward);
-                    else if (IsInBounds(gx, gy + areaH) && isWall[gx, gy + areaH]) wallRotation = Quaternion.LookRotation(Vector3.back);
-                    else continue;
+                    if (InBounds(gx - 1, gz) && isWall[gx - 1, gz]) wallRot = Quaternion.LookRotation(Vector3.right);
+                    else if (InBounds(gx + aw, gz) && isWall[gx + aw, gz]) wallRot = Quaternion.LookRotation(Vector3.left);
+                    else if (InBounds(gx, gz - 1) && isWall[gx, gz - 1]) wallRot = Quaternion.LookRotation(Vector3.forward);
+                    else if (InBounds(gx, gz + ad) && isWall[gx, gz + ad]) wallRot = Quaternion.LookRotation(Vector3.back);
+                    else continue; // não encostou em parede
                 }
 
-                foundPos = new Vector2Int(gx, gy);
+                pos = new Vector2Int(gx, gz);
                 return true;
             }
 
-            foundPos = Vector2Int.zero;
+            pos = default;
             return false;
         }
-        
-        // --- Sequência de Posicionamento de Props ---
-        
+
+        // Sequência de posicionamento
         foreach (var prop in roomProps)
         {
             if (prop.prefab == null || _localRng.NextDouble() > prop.placementChance) continue;
 
-            int propW = prop.size.x > 0 ? prop.size.x : 1;
-            int propH = prop.size.y > 0 ? prop.size.y : 1;
+            int aw = Math.Max(1, prop.size.x);
+            int ad = Math.Max(1, prop.size.y);
 
-            if (TryFindPlacementArea(propW, propH, prop.placeOnWall, out var foundPos, out var wallRot))
+            if (TryFindPlacementArea(aw, ad, prop.placeOnWall, out var found, out var wallRot))
             {
-                Quaternion finalRotation = wallRot;
+                Quaternion rot = wallRot;
                 if (!prop.placeOnWall && prop.randomRotation)
-                {
-                    finalRotation = Quaternion.Euler(0, 90f * _localRng.Next(0, 4), 0);
-                }
-                
-                Vector3 centerPos = baseWorldPos + new Vector3(
-                    (foundPos.x + (propW - 1) * 0.5f) * voxelSize,
+                    rot = Quaternion.Euler(0, 90f * _localRng.Next(0, 4), 0);
+
+                // Centro do prop na área encontrada (em nível do chão)
+                Vector3 center = baseWorldPos + new Vector3(
+                    (found.x + (aw - 1) * 0.5f) * voxelSize,
                     0f,
-                    (foundPos.y + (propH - 1) * 0.5f) * voxelSize
+                    (found.y + (ad - 1) * 0.5f) * voxelSize
                 );
 
-                var spawnedProp = SpawnFromPool(prop.prefab, centerPos, finalRotation, room.container);
-                if (spawnedProp == null) spawnedProp = Instantiate(prop.prefab, centerPos, finalRotation, room.container);
+                var spawned = SpawnFromPool(prop.prefab, center, rot, room.root);
+                if (spawned == null)
+                    spawned = Instantiate(prop.prefab, center, rot, room.root);
 
-                if (spawnedProp.GetComponent<PoolableObject>() == null)
-                {
-                    var tag = spawnedProp.AddComponent<PoolableObject>();
-                    tag.OriginalPrefab = prop.prefab;
-                }
+                // Garantir tag de pool para retorno correto
+                var tag = spawned.GetComponent<PoolableObject>();
+                if (tag == null) tag = spawned.AddComponent<PoolableObject>();
+                tag.OriginalPrefab = prop.prefab;
 
-                room.spawnedProps.Add(spawnedProp);
-                
-                // Marca a área como ocupada para os próximos props
-                for (int ix = foundPos.x; ix < foundPos.x + propW; ix++)
-                    // >>> CORREÇÃO APLICADA NA LINHA ABAIXO <<<
-                    for (int iy = foundPos.y; iy < foundPos.y + propH; iy++)
-                        if (IsInBounds(ix, iy)) occupied[ix, iy] = true;
+                room.props.Add(spawned);
+
+                // Marca área ocupada (CORREÇÃO: z correto)
+                for (int ix = found.x; ix < found.x + aw; ix++)
+                    for (int iz = found.y; iz < found.y + ad; iz++)
+                        if (InBounds(ix, iz)) occupied[ix, iz] = true;
             }
         }
-        
-        // Otimização: Desativa sombras nos props gerados para melhorar performance
-        foreach (var p in room.spawnedProps)
+
+        // Otimização simples: desativa sombras dos props para performance
+        foreach (var p in room.props)
         {
-            if (p == null) continue;
-            var renderers = p.GetComponentsInChildren<Renderer>(true);
-            foreach (var r in renderers)
-            {
+            if (!p) continue;
+            var rends = p.GetComponentsInChildren<Renderer>(true);
+            foreach (var r in rends)
                 r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            }
         }
     }
 }

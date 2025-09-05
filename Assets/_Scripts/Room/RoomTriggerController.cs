@@ -16,22 +16,22 @@ using UnityEngine.Events;
 /// (ou preencha o campo 'triggerZone' com outro collider de trigger).
 ///
 /// Integrações:
-/// • Fechamento da entrada: procura VoxelDoorController em 'entryDoorRoot'.
-/// • Abertura da saída: procura VoxelDoorController em 'exitDoorRoot',
+/// • Fechamento da ENTRADA: procura VoxelDoorController em 'entryDoorRoot'.
+/// • Abertura da SAÍDA:     procura VoxelDoorController em 'exitDoorRoot',
 ///   quando GameSignals.EmitRoomShouldOpenExit(inst) for emitido e
 ///   inst.root == roomRoot.
 /// • Notificação de Lockdown: (1) UnityEvent onLockdownRequest (int roomIndex),
 ///   (2) opcionalmente SendMessageUpwards("OnRoomLockdownRequested", roomIndex).
 ///
 /// Observação: este script não destrói nada; o descarregamento real deve
-/// ser orquestrado pelo GameFlowManager usando pool (Release/ReleaseAll).
+/// ser orquestrado pelo GameFlowManager usando pool.
 /// </summary>
 [DisallowMultipleComponent]
 [AddComponentMenu("Voxel Nightmare/Room Trigger Controller")]
 public sealed class RoomTriggerController : MonoBehaviour
 {
     [Header("Referências da Sala")]
-    [Tooltip("Root/container desta sala (RoomInstance.root). Usado para comparar com sinais globais.")]
+    [Tooltip("Root/container desta sala (RoomInstance.root). Usado p/ comparar com sinais globais.")]
     [SerializeField] private Transform roomRoot;
 
     [Tooltip("Container da porta de ENTRADA (blocos 1x1x1).")]
@@ -44,7 +44,7 @@ public sealed class RoomTriggerController : MonoBehaviour
     [SerializeField] private int roomIndex = -1;
 
     [Header("Trigger de Entrada")]
-    [Tooltip("Collider que detecta a entrada do jogador. Se vazio, usa o collider deste próprio GameObject.")]
+    [Tooltip("Collider que detecta a entrada do jogador. Se vazio, usa o collider deste GO.")]
     [SerializeField] private Collider triggerZone;
 
     [Tooltip("Tag usada para reconhecer o jogador.")]
@@ -63,10 +63,11 @@ public sealed class RoomTriggerController : MonoBehaviour
     [Tooltip("Enviar também um SendMessageUpwards(\"OnRoomLockdownRequested\", roomIndex).")]
     [SerializeField] private bool sendMessageUpwardsOnLockdown = false;
 
-    [System.Serializable] public class IntEvent : UnityEvent<int> { }
+    [System.Serializable]
+    public class IntEvent : UnityEvent<int> { }
 
     [Header("Eventos")]
-    [Tooltip("Disparado quando o jogador entra e o lockdown deve acontecer (envia roomIndex). Conecte no GameFlowManager.")]
+    [Tooltip("Disparado quando o jogador entra e o lockdown deve acontecer (envia roomIndex).")]
     [SerializeField] private IntEvent onLockdownRequest = new IntEvent();
 
     [Tooltip("Chamado imediatamente ao detectar o jogador no trigger.")]
@@ -84,30 +85,20 @@ public sealed class RoomTriggerController : MonoBehaviour
     private void Awake()
     {
         // Auto-resolve do trigger
-        if (!triggerZone)
-        {
-            triggerZone = GetComponent<Collider>();
-        }
-
-        // Checagens
+        if (!triggerZone) triggerZone = GetComponent<Collider>();
         if (!triggerZone)
             Debug.LogError($"[{nameof(RoomTriggerController)}] Nenhum Collider de trigger atribuído.", this);
         else if (!triggerZone.isTrigger)
             Debug.LogWarning($"[{nameof(RoomTriggerController)}] O collider não está marcado como 'isTrigger'. Corrigindo.", this);
 
-        if (triggerZone && !triggerZone.isTrigger)
-            triggerZone.isTrigger = true;
+        if (triggerZone && !triggerZone.isTrigger) triggerZone.isTrigger = true;
 
         // Cache de portas
-        if (entryDoorRoot)
-            _entryDoor = entryDoorRoot.GetComponent<VoxelDoorController>();
-        if (!_entryDoor && entryDoorRoot)
-            _entryDoor = entryDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
+        if (entryDoorRoot) _entryDoor = entryDoorRoot.GetComponent<VoxelDoorController>();
+        if (!_entryDoor && entryDoorRoot) _entryDoor = entryDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
 
-        if (exitDoorRoot)
-            _exitDoor = exitDoorRoot.GetComponent<VoxelDoorController>();
-        if (!_exitDoor && exitDoorRoot)
-            _exitDoor = exitDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
+        if (exitDoorRoot) _exitDoor = exitDoorRoot.GetComponent<VoxelDoorController>();
+        if (!_exitDoor && exitDoorRoot) _exitDoor = exitDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
     }
 
     private void OnEnable()
@@ -125,10 +116,13 @@ public sealed class RoomTriggerController : MonoBehaviour
     {
         if (!_armed) return;
         if (oneShot && _hasFired) return;
-        if (!other || (playerTag.Length > 0 && !other.CompareTag(playerTag)))
+        if (!other) return;
+
+        // Tag do player OU fallback por CharacterController no parent
+        bool isPlayer = (playerTag.Length == 0) || other.CompareTag(playerTag);
+        if (!isPlayer)
         {
-            // Alternativa: detectar CharacterController
-            var cc = other ? other.GetComponentInParent<CharacterController>() : null;
+            var cc = other.GetComponentInParent<CharacterController>();
             if (cc == null) return;
         }
 
@@ -139,6 +133,7 @@ public sealed class RoomTriggerController : MonoBehaviour
     private IEnumerator LockdownRoutine()
     {
         _armed = false;
+
         onPlayerEntered?.Invoke();
 
         // 1) Fecha ENTRADA (caso exista)
@@ -157,6 +152,7 @@ public sealed class RoomTriggerController : MonoBehaviour
                 SetChildrenActive(entryDoorRoot, true);
                 yield return null;
             }
+
             onEntryClosed?.Invoke();
         }
 
@@ -167,7 +163,7 @@ public sealed class RoomTriggerController : MonoBehaviour
 
             if (sendMessageUpwardsOnLockdown)
             {
-                // Livre de dependência direta; GameFlowManager pode implementar este método público:
+                // Livre de dependência direta; GameFlowManager pode implementar:
                 // void OnRoomLockdownRequested(int roomIndex)
                 SendMessageUpwards("OnRoomLockdownRequested", roomIndex, SendMessageOptions.DontRequireReceiver);
             }
@@ -176,10 +172,11 @@ public sealed class RoomTriggerController : MonoBehaviour
 
     /// <summary>
     /// Handler do sinal global para abrir a SAÍDA quando a próxima sala estiver pronta.
+    /// Usa o contrato único de RoomsData: RoomInstance.
     /// </summary>
     private void OnRoomShouldOpenExitSignal(RoomInstance inst)
     {
-        if (!inst?.root) return;
+        if (inst == null || inst.root == null) return;
 
         // Só responde se o sinal for para ESTA sala
         if (roomRoot && inst.root != roomRoot) return;
@@ -190,7 +187,8 @@ public sealed class RoomTriggerController : MonoBehaviour
         }
         else if (exitDoorRoot)
         {
-            SetChildrenActive(exitDoorRoot, false); // "abrir" = ocultar blocos
+            // "Abrir" = ocultar blocos da cortina
+            SetChildrenActive(exitDoorRoot, false);
         }
     }
 
@@ -202,10 +200,7 @@ public sealed class RoomTriggerController : MonoBehaviour
     }
 
     /// <summary>Desarma definitivamente este trigger.</summary>
-    public void Disarm()
-    {
-        _armed = false;
-    }
+    public void Disarm() => _armed = false;
 
     /// <summary>Define/atualiza metadados em tempo de execução (usado pelo gerador).</summary>
     public void BindRuntime(Transform roomRoot, Transform entryDoorRoot, Transform exitDoorRoot, int roomIndex)
@@ -215,11 +210,11 @@ public sealed class RoomTriggerController : MonoBehaviour
         this.exitDoorRoot = exitDoorRoot;
         this.roomIndex = roomIndex;
 
-        _entryDoor = null; _exitDoor = null;
-        if (entryDoorRoot)
-            _entryDoor = entryDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
-        if (exitDoorRoot)
-            _exitDoor = exitDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
+        // Recache portas
+        _entryDoor = null;
+        _exitDoor = null;
+        if (entryDoorRoot) _entryDoor = entryDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
+        if (exitDoorRoot) _exitDoor = exitDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
     }
 
     private static void SetChildrenActive(Transform root, bool active)
@@ -238,6 +233,7 @@ public sealed class RoomTriggerController : MonoBehaviour
         if (triggerZone)
         {
             Gizmos.color = new Color(1f, 0.8f, 0.2f, 0.35f);
+
             var box = triggerZone as BoxCollider;
             var sph = triggerZone as SphereCollider;
             var cap = triggerZone as CapsuleCollider;

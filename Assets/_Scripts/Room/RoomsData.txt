@@ -9,9 +9,9 @@ using UnityEngine;
 public enum WallSide
 {
     North = 0,
-    East = 1,
+    East  = 1,
     South = 2,
-    West = 3
+    West  = 3
 }
 
 /// <summary>
@@ -42,11 +42,11 @@ public struct DoorRect
 
     public DoorRect(WallSide side, int x, int width, int yMin, int yMax)
     {
-        this.side = side;
-        this.x = x;
+        this.side  = side;
+        this.x     = x;
         this.width = Mathf.Max(1, width);
-        this.yMin = yMin;
-        this.yMax = Mathf.Max(yMin, yMax);
+        this.yMin  = yMin;
+        this.yMax  = Mathf.Max(yMin, yMax);
     }
 
     public override string ToString()
@@ -94,16 +94,17 @@ public struct RoomPlan
         DoorRect entry,
         DoorRect exit,
         int generatorIndex,
-        int randomSeed)
+        int randomSeed
+    )
     {
-        this.id = id;
-        this.gridOrigin = gridOrigin;
-        this.size = new Vector2Int(Mathf.Max(1, size.x), Mathf.Max(1, size.y));
-        this.height = Mathf.Max(1, height);
-        this.entry = entry;
-        this.exit = exit;
+        this.id             = id;
+        this.gridOrigin     = gridOrigin;
+        this.size           = new Vector2Int(Mathf.Max(1, size.x), Mathf.Max(1, size.y));
+        this.height         = Mathf.Max(1, height);
+        this.entry          = entry;
+        this.exit           = exit;
         this.generatorIndex = Mathf.Max(0, generatorIndex);
-        this.randomSeed = randomSeed;
+        this.randomSeed     = randomSeed;
     }
 
     public override string ToString()
@@ -126,10 +127,10 @@ public class RoomInstance
     public Transform root;
 
     [Tooltip("Voxels principais (1x1x1) instanciados para a estrutura oca).")]
-    public List<Transform> voxels = new List<Transform>();
+    public List<GameObject> voxels = new List<GameObject>();
 
     [Tooltip("Objetos decorativos/props da sala.")]
-    public List<Transform> props = new List<Transform>();
+    public List<GameObject> props = new List<GameObject>();
 
     [Tooltip("Root da porta de entrada (container com cubos 1x1x1).")]
     public Transform entryDoorRoot;
@@ -156,8 +157,8 @@ public class RoomInstance
 
     public void ResetCollections()
     {
-        voxels ??= new List<Transform>();
-        props ??= new List<Transform>();
+        voxels ??= new List<GameObject>();
+        props  ??= new List<GameObject>();
         voxels.Clear();
         props.Clear();
     }
@@ -166,5 +167,5 @@ public class RoomInstance
     {
         string rootName = root ? root.name : "null";
         return $"RoomInstance(plan#{plan.id}, root={rootName}, voxels={voxels?.Count ?? 0}, props={props?.Count ?? 0})";
-    }
+        }
 }
