@@ -1,31 +1,16 @@
 // RoomTriggerController.cs
+// Controla a detecção de entrada do jogador na sala (lockdown) e integra com o fluxo PR-02:
+// - Ao entrar: fecha a porta de ENTRADA (se houver) e notifica o sistema do lockdown.
+// - NÃO abre a saída diretamente. A SAÍDA abre somente quando o GameFlowManager emitir
+//   GameSignals.RoomShouldOpenExit para ESTA sala (após a próxima sala ficar pronta).
+
 using System.Collections;
 using UnityEngine;
 using UnityEngine.Events;
 
-/// <summary>
-/// Controla a “entrada do jogador” na sala e dispara o LOCKDOWN:
-/// - Fecha a porta de ENTRADA da sala atual (se houver VoxelDoorController).
-/// - Notifica o sistema (via UnityEvent e/ou SendMessageUpwards) para
-///   descarregar a sala anterior e fixar o jogador dentro desta sala.
-/// - Escuta GameSignals.RoomShouldOpenExit para abrir a porta de SAÍDA
-///   quando a próxima sala estiver pronta.
-///
-/// Coloque este componente no GameObject root (container) da sala.
-/// O próprio GameObject deve ter um Collider marcado como "isTrigger"
-/// (ou preencha o campo 'triggerZone' com outro collider de trigger).
-///
-/// Integrações:
-/// • Fechamento da ENTRADA: procura VoxelDoorController em 'entryDoorRoot'.
-/// • Abertura da SAÍDA:     procura VoxelDoorController em 'exitDoorRoot',
-///   quando GameSignals.EmitRoomShouldOpenExit(inst) for emitido e
-///   inst.root == roomRoot.
-/// • Notificação de Lockdown: (1) UnityEvent onLockdownRequest (int roomIndex),
-///   (2) opcionalmente SendMessageUpwards("OnRoomLockdownRequested", roomIndex).
-///
-/// Observação: este script não destrói nada; o descarregamento real deve
-/// ser orquestrado pelo GameFlowManager usando pool.
-/// </summary>
+// Alias para o contrato único
+using RoomInstance = RoomsData.RoomInstance;
+
 [DisallowMultipleComponent]
 [AddComponentMenu("Voxel Nightmare/Room Trigger Controller")]
 public sealed class RoomTriggerController : MonoBehaviour
@@ -73,7 +58,7 @@ public sealed class RoomTriggerController : MonoBehaviour
     [Tooltip("Chamado imediatamente ao detectar o jogador no trigger.")]
     [SerializeField] private UnityEvent onPlayerEntered = new UnityEvent();
 
-    [Tooltip("Chamado após fechar a entrada (se aplicável).")]
+    [Tooltip("Chamado após fechar a ENTRADA (se aplicável).")]
     [SerializeField] private UnityEvent onEntryClosed = new UnityEvent();
 
     // Estado interno
@@ -87,11 +72,14 @@ public sealed class RoomTriggerController : MonoBehaviour
         // Auto-resolve do trigger
         if (!triggerZone) triggerZone = GetComponent<Collider>();
         if (!triggerZone)
+        {
             Debug.LogError($"[{nameof(RoomTriggerController)}] Nenhum Collider de trigger atribuído.", this);
+        }
         else if (!triggerZone.isTrigger)
+        {
             Debug.LogWarning($"[{nameof(RoomTriggerController)}] O collider não está marcado como 'isTrigger'. Corrigindo.", this);
-
-        if (triggerZone && !triggerZone.isTrigger) triggerZone.isTrigger = true;
+            triggerZone.isTrigger = true;
+        }
 
         // Cache de portas
         if (entryDoorRoot) _entryDoor = entryDoorRoot.GetComponent<VoxelDoorController>();
@@ -103,7 +91,7 @@ public sealed class RoomTriggerController : MonoBehaviour
 
     private void OnEnable()
     {
-        // Escuta abertura da SAÍDA quando o maestro sinalizar
+        // Escuta abertura da SAÍDA quando o maestro sinalizar (PR-02)
         GameSignals.RoomShouldOpenExit += OnRoomShouldOpenExitSignal;
     }
 
@@ -119,7 +107,7 @@ public sealed class RoomTriggerController : MonoBehaviour
         if (!other) return;
 
         // Tag do player OU fallback por CharacterController no parent
-        bool isPlayer = (playerTag.Length == 0) || other.CompareTag(playerTag);
+        bool isPlayer = (string.IsNullOrEmpty(playerTag)) || other.CompareTag(playerTag);
         if (!isPlayer)
         {
             var cc = other.GetComponentInParent<CharacterController>();
@@ -133,7 +121,6 @@ public sealed class RoomTriggerController : MonoBehaviour
     private IEnumerator LockdownRoutine()
     {
         _armed = false;
-
         onPlayerEntered?.Invoke();
 
         // 1) Fecha ENTRADA (caso exista)
@@ -141,7 +128,7 @@ public sealed class RoomTriggerController : MonoBehaviour
         {
             if (_entryDoor)
             {
-                // Deixe o controller cuidar da animação de "fechar"
+                // O controller cuida da animação de fechar
                 _entryDoor.Close();
                 // Pequena folga para animações curtas (sem travar o frame)
                 yield return null;
@@ -172,7 +159,7 @@ public sealed class RoomTriggerController : MonoBehaviour
 
     /// <summary>
     /// Handler do sinal global para abrir a SAÍDA quando a próxima sala estiver pronta.
-    /// Usa o contrato único de RoomsData: RoomInstance.
+    /// Usa o contrato único RoomsData.RoomInstance.
     /// </summary>
     private void OnRoomShouldOpenExitSignal(RoomInstance inst)
     {
@@ -213,6 +200,7 @@ public sealed class RoomTriggerController : MonoBehaviour
         // Recache portas
         _entryDoor = null;
         _exitDoor = null;
+
         if (entryDoorRoot) _entryDoor = entryDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
         if (exitDoorRoot) _exitDoor = exitDoorRoot.GetComponentInChildren<VoxelDoorController>(true);
     }

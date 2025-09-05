@@ -107,6 +107,7 @@
     <None Include="Assets/_Scripts/Player/BatteryComponent.txt" />
     <None Include="Assets/_Scripts/VoxelSystem/VoxelPool.txt" />
     <None Include="Assets/_Scripts/Room/RoomsData.txt" />
+    <None Include="Assets/_Scripts/VoxelSystem/IPoolable.txt" />
     <None Include="Assets/_Scripts/Room/GameFlowManager.txt" />
     <None Include="Assets/_Scripts/VoxelSystem/MicroVoxel.txt" />
     <None Include="Assets/_Scripts/VoxelSystem/VoxelFaceContoller.txt" />

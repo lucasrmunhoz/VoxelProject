@@ -94,8 +94,7 @@ public struct RoomPlan
         DoorRect entry,
         DoorRect exit,
         int generatorIndex,
-        int randomSeed
-    )
+        int randomSeed)
     {
         this.id             = id;
         this.gridOrigin     = gridOrigin;
@@ -132,10 +131,10 @@ public class RoomInstance
     [Tooltip("Objetos decorativos/props da sala.")]
     public List<GameObject> props = new List<GameObject>();
 
-    [Tooltip("Root da porta de entrada (container com cubos 1x1x1).")]
+    [Tooltip("Root da porta de ENTRADA (container com cubos 1x1x1).")]
     public Transform entryDoorRoot;
 
-    [Tooltip("Root da porta de saída (container com cubos 1x1x1).")]
+    [Tooltip("Root da porta de SAÍDA (container com cubos 1x1x1).")]
     public Transform exitDoorRoot;
 
     [Tooltip("Componente de estado da sala (RoomStateManager). Armazenado como MonoBehaviour para evitar dependência rígida.")]

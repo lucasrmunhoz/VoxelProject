@@ -1,7 +1,9 @@
 // GameFlowManager.cs
 // Gerenciador do fluxo/streaming de salas.
-// PR-01 original: usava alias para RoomsData.RoomPlan; nesta versão removemos o alias
-// para compatibilidade com os tipos em escopo global definidos em RoomsData.
+// PR-01: usa exclusivamente RoomsData.RoomPlan como contrato (remove duplicidade de tipos).
+// PR-02: a porta de SAÍDA da sala atual só abre DEPOIS que a próxima sala estiver pronta.
+//        -> Centraliza a emissão em GameFlowManager logo após registrar a próxima sala.
+//        -> Mantém o RoomTriggerController apenas como listener do sinal (sem decidir abertura).
 
 using System;
 using System.Collections;
@@ -9,10 +11,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
-
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
+
+// Alias para consumir o contrato único de RoomsData
+using RoomPlan = RoomsData.RoomPlan;
+using RoomInstance = RoomsData.RoomInstance;
 
 [DisallowMultipleComponent]
 public class GameFlowManager : MonoBehaviour
@@ -61,7 +66,7 @@ public class GameFlowManager : MonoBehaviour
     // -------------------- Estado / tipos auxiliares --------------------
     private System.Random _rng;
 
-    // Layout planejado do mapa (contrato: RoomPlan em escopo global)
+    // Layout planejado do mapa (contrato único RoomsData.RoomPlan)
     private readonly List<RoomPlan> _roomPlans = new List<RoomPlan>();
 
     // Tiles ocupados do grid de planejamento
@@ -72,16 +77,17 @@ public class GameFlowManager : MonoBehaviour
     {
         public RoomPlan plan;
         public Transform container;
-        public int index;          // mantido por compat (usa plan.id)
+        public int index;              // mantido por compat (usa plan.id)
         public DateTime loadedAt;
-        public int usageTick;      // para LRU
+        public int usageTick;          // para LRU
     }
 
     // MRU na frente
     private readonly LinkedList<ActiveRoom> _activeRooms = new LinkedList<ActiveRoom>();
 
-    // Índice rápido por container
+    // Índice rápido por container e por índice
     private readonly Dictionary<Transform, ActiveRoom> _byContainer = new Dictionary<Transform, ActiveRoom>();
+    private readonly Dictionary<int, ActiveRoom> _byIndex = new Dictionary<int, ActiveRoom>();
 
     // Fila de índices de salas a gerar
     private readonly Queue<int> _generationQueue = new Queue<int>();
@@ -89,7 +95,13 @@ public class GameFlowManager : MonoBehaviour
     private bool _isGenerating = false;
     private int _usageCounter = 0;
 
-    // Eventos
+    // -------------------- PR-02: coordenação de abertura de SAÍDA --------------------
+    // Quando o jogador entra na sala i (lockdown), aguardamos construir a sala i+1.
+    // Assim que i+1 for registrada, emitimos "RoomShouldOpenExit" para i.
+    private int? _pendingExitOpenForIndex = null;
+    private readonly HashSet<int> _exitOpenedOnce = new HashSet<int>();
+
+    // -------------------- Eventos públicos (mantém assinaturas usadas no código) --------------------
     public event Action OnMapReady;
     public event Action<RoomPlan, Transform> OnRoomLoaded;
     public event Action<RoomPlan> OnRoomUnloaded;
@@ -113,12 +125,13 @@ public class GameFlowManager : MonoBehaviour
 
         MapAllRoomsLayout();
         OnMapReady?.Invoke();
+
+        if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Awake → layout mapeado com {_roomPlans.Count} salas (seed={seed}).");
     }
 
     private void Update()
     {
-        if (playerTransform != null)
-            ManageUnloadByPlayerDistance();
+        if (playerTransform != null) ManageUnloadByPlayerDistance();
     }
 
     // -------------------- Mapeamento / layout --------------------
@@ -149,12 +162,12 @@ public class GameFlowManager : MonoBehaviour
                 {
                     MarkArea(origin, size);
 
-                    // Construir RoomPlan (id, gridOrigin, size, height, doors, generator, seed)
+                    // PR-01: construir RoomsData.RoomPlan (id, gridOrigin, size, height, doors, generator, seed)
                     var plan = new RoomPlan(
                         id: i,
                         gridOrigin: origin,
                         size: size,
-                        height: 3,               // altura padrão; geradores especializados podem sobrescrever
+                        height: 3, // altura padrão; geradores especializados podem sobrescrever
                         entry: default,
                         exit: default,
                         generatorIndex: 0,
@@ -165,7 +178,6 @@ public class GameFlowManager : MonoBehaviour
 
                     // avança cursor heurístico para borda aleatória da sala atual
                     cursor = ChooseRandomEdgeGrid(origin, size);
-
                     placed = true;
                     break;
                 }
@@ -173,14 +185,12 @@ public class GameFlowManager : MonoBehaviour
 
             if (!placed)
             {
-                if (verbose)
-                    Debug.LogWarning($"[GameFlowManager] Não foi possível posicionar a sala #{i} após {maxPlacementAttemptsPerRoom} tentativas.");
+                if (verbose) Debug.LogWarning($"{Ts()} [GameFlowManager] Não foi possível posicionar a sala #{i} após {maxPlacementAttemptsPerRoom} tentativas.");
                 break;
             }
         }
 
-        if (verbose)
-            Debug.Log($"[GameFlowManager] Mapeamento completo: {_roomPlans.Count} salas (seed={seed}).");
+        if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Mapeamento completo: {_roomPlans.Count} salas (seed={seed}).");
     }
 
     private Vector2Int RandomRoomSize()
@@ -192,12 +202,9 @@ public class GameFlowManager : MonoBehaviour
 
     private Vector2Int FindOriginForIndex(int index, Vector2Int cursor, Vector2Int size)
     {
-        var dirs = new List<Vector2Int>
-        {
-            new Vector2Int(1, 0),
-            new Vector2Int(-1, 0),
-            new Vector2Int(0, 1),
-            new Vector2Int(0, -1)
+        var dirs = new List<Vector2Int> {
+            new Vector2Int(1, 0), new Vector2Int(-1, 0),
+            new Vector2Int(0, 1), new Vector2Int(0, -1)
         };
 
         var dir = dirs[_rng.Next(0, dirs.Count)];
@@ -215,7 +222,7 @@ public class GameFlowManager : MonoBehaviour
         switch (side)
         {
             case 0: return new Vector2Int(origin.x + size.x, origin.y + _rng.Next(0, size.y));
-            case 1: return new Vector2Int(origin.x - 1,         origin.y + _rng.Next(0, size.y));
+            case 1: return new Vector2Int(origin.x - 1,       origin.y + _rng.Next(0, size.y));
             case 2: return new Vector2Int(origin.x + _rng.Next(0, size.x), origin.y + size.y);
             default:return new Vector2Int(origin.x + _rng.Next(0, size.x), origin.y - 1);
         }
@@ -224,21 +231,20 @@ public class GameFlowManager : MonoBehaviour
     private bool IsAreaFree(Vector2Int origin, Vector2Int size)
     {
         for (int x = origin.x; x < origin.x + size.x; x++)
-            for (int y = origin.y; y < origin.y + size.y; y++)
-                if (_occupiedTiles.Contains(new Vector2Int(x, y)))
-                    return false;
+        for (int y = origin.y; y < origin.y + size.y; y++)
+            if (_occupiedTiles.Contains(new Vector2Int(x, y)))
+                return false;
         return true;
     }
 
     private void MarkArea(Vector2Int origin, Vector2Int size)
     {
         for (int x = origin.x; x < origin.x + size.x; x++)
-            for (int y = origin.y; y < origin.y + size.y; y++)
-                _occupiedTiles.Add(new Vector2Int(x, y));
+        for (int y = origin.y; y < origin.y + size.y; y++)
+            _occupiedTiles.Add(new Vector2Int(x, y));
     }
 
     // -------------------- Controle de fluxo --------------------
-
     /// Inicia o fluxo procedural a partir de um índice (ex.: 0).
     public void StartProceduralFlow(int startIndex = 0)
     {
@@ -264,11 +270,10 @@ public class GameFlowManager : MonoBehaviour
         if (!_generationQueue.Contains(index))
         {
             _generationQueue.Enqueue(index);
-            if (verbose) Debug.Log($"[GameFlowManager] Sala {index} enfileirada para geração.");
+            if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Sala {index} enfileirada para geração.");
         }
 
-        if (!_isGenerating)
-            StartCoroutine(ProcessGenerationQueue());
+        if (!_isGenerating) StartCoroutine(ProcessGenerationQueue());
     }
 
     private IEnumerator ProcessGenerationQueue()
@@ -282,7 +287,7 @@ public class GameFlowManager : MonoBehaviour
 
             var plan = _roomPlans[index];
 
-            if (verbose) Debug.Log($"[GameFlowManager] Gerando sala {index} (origin {plan.gridOrigin})...");
+            if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Gerando sala {index} (origin {plan.gridOrigin})...");
 
             Transform container = null;
             Exception invokeException = null;
@@ -312,13 +317,41 @@ public class GameFlowManager : MonoBehaviour
                 }
 
                 if (container == null)
-                    Debug.LogError($"[GameFlowManager] Timeout ao localizar container para sala {index} (origin {plan.gridOrigin}).");
+                    Debug.LogError($"{Ts()} [GameFlowManager] Timeout ao localizar container para sala {index} (origin {plan.gridOrigin}).");
             }
 
             if (container != null)
             {
                 RegisterActiveRoom(plan, container);
                 OnRoomLoaded?.Invoke(plan, container);
+
+                // -------------------- PR-02 (núcleo) --------------------
+                // Se acabamos de registrar a sala (index) e existe um "pending" para (index-1),
+                // emitimos a abertura da SAÍDA para a sala anterior.
+                if (_pendingExitOpenForIndex.HasValue &&
+                    _pendingExitOpenForIndex.Value == (index - 1) &&
+                    !_exitOpenedOnce.Contains(_pendingExitOpenForIndex.Value))
+                {
+                    int prevIndex = _pendingExitOpenForIndex.Value;
+                    if (_byIndex.TryGetValue(prevIndex, out var prevActive) && prevActive?.container)
+                    {
+                        // Monta uma RoomInstance mínima para o sinal (listeners checam root).
+                        var inst = new RoomInstance
+                        {
+                            plan = prevActive.plan,
+                            root = prevActive.container
+                        };
+
+                        if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Próxima sala #{index} pronta → EmitRoomShouldOpenExit para sala #{prevIndex}.");
+                        GameSignals.EmitRoomShouldOpenExit(inst);
+
+                        _exitOpenedOnce.Add(prevIndex);
+                    }
+
+                    // Limpa pendência após emitir
+                    _pendingExitOpenForIndex = null;
+                }
+                // ---------------------------------------------------------
             }
 
             if (useAsyncGeneration)
@@ -338,13 +371,13 @@ public class GameFlowManager : MonoBehaviour
         {
             existing.usageTick = ++_usageCounter;
             existing.loadedAt = DateTime.UtcNow;
-
             var node = _activeRooms.Find(existing);
             if (node != null)
             {
                 _activeRooms.Remove(node);
                 _activeRooms.AddFirst(node);
             }
+            _byIndex[existing.index] = existing;
             return;
         }
 
@@ -360,9 +393,9 @@ public class GameFlowManager : MonoBehaviour
 
         _activeRooms.AddFirst(ar);
         _byContainer[container] = ar;
+        _byIndex[ar.index] = ar;
 
-        if (verbose)
-            Debug.Log($"[GameFlowManager] Sala registrada: id={plan.id}, container={container.name}");
+        if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Sala registrada: id={plan.id}, container={container.name}");
 
         EnforceActiveRoomLimit();
     }
@@ -377,7 +410,7 @@ public class GameFlowManager : MonoBehaviour
             var lru = lruNode.Value;
             if (lru != null)
             {
-                if (verbose) Debug.Log($"[GameFlowManager] Removendo sala LRU id={lru.index}");
+                if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Removendo sala LRU id={lru.index}");
                 UnloadRoom(lru);
             }
             else
@@ -405,10 +438,11 @@ public class GameFlowManager : MonoBehaviour
 #endif
         }
 
-        if (toUnload.container != null)
-            _byContainer.Remove(toUnload.container);
+        if (toUnload.container != null) _byContainer.Remove(toUnload.container);
+        _byIndex.Remove(toUnload.index);
 
         _activeRooms.Remove(toUnload);
+
         OnRoomUnloaded?.Invoke(toUnload.plan);
     }
 
@@ -418,10 +452,10 @@ public class GameFlowManager : MonoBehaviour
 
         Type genType = baseRoomGenerator.GetType();
 
-        // Tenta assinaturas conhecidas na ordem:
-        // 1) ClearRoom(Transform) 2) ClearRoom(GameObject)
-        MethodInfo m = genType.GetMethod("ClearRoom", new[] { typeof(Transform) })
-                      ?? genType.GetMethod("ClearRoom", new[] { typeof(GameObject) });
+        // Tenta assinaturas conhecidas na ordem: 1) ClearRoom(Transform) 2) ClearRoom(GameObject)
+        MethodInfo m =
+            genType.GetMethod("ClearRoom", new[] { typeof(Transform) }) ??
+            genType.GetMethod("ClearRoom", new[] { typeof(GameObject) });
 
         if (m != null)
         {
@@ -436,7 +470,7 @@ public class GameFlowManager : MonoBehaviour
             }
             catch (Exception ex)
             {
-                if (verbose) Debug.LogWarning($"[GameFlowManager] ClearRoom via generator falhou: {ex.Message}");
+                if (verbose) Debug.LogWarning($"{Ts()} [GameFlowManager] ClearRoom via generator falhou: {ex.Message}");
             }
         }
 
@@ -446,8 +480,7 @@ public class GameFlowManager : MonoBehaviour
     // -------------------- Invocação do gerador (reflexão robusta) --------------------
     private void InvokeBaseGeneratorForPlan(RoomPlan plan)
     {
-        if (baseRoomGenerator == null)
-            throw new InvalidOperationException("baseRoomGenerator não atribuído.");
+        if (baseRoomGenerator == null) throw new InvalidOperationException("baseRoomGenerator não atribuído.");
 
         Type genType = baseRoomGenerator.GetType();
 
@@ -459,7 +492,6 @@ public class GameFlowManager : MonoBehaviour
             {
                 int height = TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3);
                 bool gradual = TryGetFieldOrPropBool(genType, baseRoomGenerator, "generateGradually", true);
-
                 m_sig1.Invoke(baseRoomGenerator, new object[] { plan.gridOrigin, plan.size, height, gradual });
                 return;
             }
@@ -482,18 +514,10 @@ public class GameFlowManager : MonoBehaviour
         var m_sig3a = genType.GetMethod("GenerateRoom", new[] { typeof(Vector2Int) });
         if (m_sig3a != null)
         {
-            try
-            {
-                m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.gridOrigin });
-                return;
-            }
+            try { m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.gridOrigin }); return; }
             catch
             {
-                try
-                {
-                    m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.size });
-                    return;
-                }
+                try { m_sig3a.Invoke(baseRoomGenerator, new object[] { plan.size }); return; }
                 catch { /* fallback */ }
             }
         }
@@ -503,9 +527,8 @@ public class GameFlowManager : MonoBehaviour
         if (m0 != null)
         {
             FieldOrPropSet(genType, baseRoomGenerator, "roomOriginGrid", plan.gridOrigin);
-            FieldOrPropSet(genType, baseRoomGenerator, "roomSize", plan.size);
-            FieldOrPropSet(genType, baseRoomGenerator, "roomHeight", TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3));
-
+            FieldOrPropSet(genType, baseRoomGenerator, "roomSize",       plan.size);
+            FieldOrPropSet(genType, baseRoomGenerator, "roomHeight",     TryGetFieldOrPropInt(genType, baseRoomGenerator, "roomHeight", 3));
             m0.Invoke(baseRoomGenerator, null);
             return;
         }
@@ -575,18 +598,19 @@ public class GameFlowManager : MonoBehaviour
 
             var all = roomsRoot.GetComponentsInChildren<Transform>(true);
             foreach (var t in all)
-                if (t.name.StartsWith(namePrefix))
+                if (t.name.StartsWith(namePrefix, StringComparison.Ordinal))
                     return t;
         }
 
         // busca global
         var global = GameObject.FindObjectsOfType<Transform>()
-            .FirstOrDefault(t => t.name.StartsWith("Room_") && t.name.Contains($"{plan.gridOrigin.x}_{plan.gridOrigin.y}"));
+            .FirstOrDefault(t => t.name.StartsWith("Room_", StringComparison.Ordinal) &&
+                                 t.name.Contains($"{plan.gridOrigin.x}_{plan.gridOrigin.y}"));
         if (global != null) return global;
 
         // fallback: último Room_* não registrado
         var allRooms = GameObject.FindObjectsOfType<Transform>()
-            .Where(t => t.name.StartsWith("Room_"))
+            .Where(t => t.name.StartsWith("Room_", StringComparison.Ordinal))
             .ToArray();
 
         for (int i = allRooms.Length - 1; i >= 0; i--)
@@ -597,7 +621,7 @@ public class GameFlowManager : MonoBehaviour
     }
 
     // -------------------- Triggers do jogador --------------------
-    /// Chame quando o jogador entrar no container da sala.
+    /// Chame quando o jogador entrar no container da sala (fallback genérico).
     public void OnPlayerEnterRoom(Transform roomContainer)
     {
         if (roomContainer == null) return;
@@ -606,8 +630,30 @@ public class GameFlowManager : MonoBehaviour
         // Marca uso (MRU) ao re-registrar
         RegisterActiveRoom(active.plan, roomContainer);
 
-        // Fechar porta (se existir) via reflexão simples (Close() ou IsOpen=false)
+        // Fechar porta de ENTRADA (se existir) via reflexão simples (Close() ou IsOpen=false)
         TryCloseDoorForRoom(active);
+    }
+
+    /// Handler recomendado pelo RoomTriggerController (via UnityEvent/SendMessageUpwards).
+    /// Aqui executamos a lógica PR-02: pedir a próxima sala e marcar pendência para abrir a SAÍDA
+    /// apenas quando a próxima sala terminar de ser construída/registrada.
+    public void OnRoomLockdownRequested(int roomIndex)
+    {
+        if (roomIndex < 0 || roomIndex >= _roomPlans.Count) return;
+
+        if (verbose) Debug.Log($"{Ts()} [GameFlowManager] LOCKDOWN recebido para sala #{roomIndex} → preparando próxima sala e aguardando confirmação de build.");
+
+        // Enfileira a próxima sala
+        int nextIndex = roomIndex + 1;
+        if (nextIndex < _roomPlans.Count)
+        {
+            EnqueueRoomGeneration(nextIndex);
+            _pendingExitOpenForIndex = roomIndex; // aguardaremos o registro de nextIndex para então abrir a saída de roomIndex
+        }
+        else
+        {
+            if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Sala #{roomIndex} é a última planejada — nenhuma próxima sala para construir.");
+        }
     }
 
     private void TryCloseDoorForRoom(ActiveRoom room)
@@ -618,7 +664,6 @@ public class GameFlowManager : MonoBehaviour
         foreach (var c in comps)
         {
             if (c == null) continue;
-
             var t = c.GetType();
 
             var mClose = t.GetMethod("Close", BindingFlags.Public | BindingFlags.Instance);
@@ -652,15 +697,14 @@ public class GameFlowManager : MonoBehaviour
             }
 
             float dist = Vector3.Distance(playerTransform.position, r.container.position);
-            if (dist > unloadDistance)
-                toUnload.Add(r);
+            if (dist > unloadDistance) toUnload.Add(r);
         }
 
         foreach (var r in toUnload)
         {
             if (_activeRooms.Contains(r))
             {
-                if (verbose) Debug.Log($"[GameFlowManager] Unloading room id={r.index} (dist>{unloadDistance}).");
+                if (verbose) Debug.Log($"{Ts()} [GameFlowManager] Unloading room id={r.index} (dist>{unloadDistance}).");
                 UnloadRoom(r);
             }
         }
@@ -675,9 +719,10 @@ public class GameFlowManager : MonoBehaviour
         if (_roomPlans.Count == 0) return;
 
         int nextIndex = 0;
-        if (_activeRooms.Count > 0)
-            nextIndex = _activeRooms.First.Value.index + 1;
+        if (_activeRooms.Count > 0) nextIndex = _activeRooms.First.Value.index + 1;
 
         EnqueueRoomGeneration(nextIndex);
     }
+
+    private static string Ts() => DateTime.UtcNow.ToString("HH:mm:ss.fff");
 }

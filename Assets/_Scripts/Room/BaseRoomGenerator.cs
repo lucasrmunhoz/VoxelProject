@@ -1,20 +1,21 @@
 // BaseRoomGenerator.cs
-// Fonte: VoxelProject (_Scripts/Room). Ajustes mínimos p/ PR-01:
-// - Remove a classe aninhada RoomInstance e usa a RoomInstance definida em RoomsData.cs.
-// - Alinha coleções e nomes: voxels/props/root/entryDoorRoot/exitDoorRoot (RoomsData).
-// - Mantém API pública e pooling do arquivo base.
-// - Sem alterações comportamentais além do necessário para compilar.
+// Fonte: VoxelProject (_Scripts/Room)
+// PR-02 (opcional/robustez): anexar automaticamente VoxelDoorController aos roots de portas
+// e indexar os voxels da “cortina” (blocos filhos do root), mantendo mudanças mínimas.
 
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
+using RoomInstance = RoomsData.RoomInstance;
+using DoorRect     = RoomsData.DoorRect;
+using WallSide     = WallSide;
 
 [DisallowMultipleComponent]
 public class BaseRoomGenerator : MonoBehaviour
 {
     #region Inspector
-
     [Header("Grid / Room Size")]
     [Tooltip("Tamanho do grid em 'blocos' (limite de geração).")]
     public Vector2Int worldGridSize = new Vector2Int(200, 200);
@@ -31,7 +32,7 @@ public class BaseRoomGenerator : MonoBehaviour
     public GameObject voxelFundamentalPrefab;
 
     [Header("Door & Props")]
-    [Tooltip("Prefab de porta (opcional). Se null, portas serão montadas com voxels).")]
+    [Tooltip("Prefab de porta (opcional). Se null, portas serão montadas com voxels.")]
     public GameObject doorPrefab;
 
     [Tooltip("Prefabs de props opcionais.")]
@@ -62,27 +63,26 @@ public class BaseRoomGenerator : MonoBehaviour
     [Tooltip("Padding entre salas no grid (tiles).")]
     public int interRoomPadding = 1;
 
+    [Header("Debug")]
+    public bool verbose = false;
     #endregion
 
     #region Internals
-
     protected System.Random _rng;
     private Transform _roomsRoot;
 
-    // Mapear o root da sala para sua RoomInstance (RoomsData)
+    // Mapeia o root da sala para sua RoomInstance (RoomsData)
     private readonly Dictionary<Transform, RoomInstance> _roomsByRoot = new Dictionary<Transform, RoomInstance>();
 
     // Pool por prefab
     private readonly Dictionary<GameObject, Queue<GameObject>> _pool = new Dictionary<GameObject, Queue<GameObject>>();
 
-    [Header("Debug")]
+    // Auxílio para inspeção no Editor
     [Tooltip("Lista de RoomInstance atualmente registradas — útil para debug no Inspector.")]
     public List<RoomInstance> debugRoomInstances = new List<RoomInstance>();
-
     #endregion
 
     #region Unity lifecycle
-
     private void Awake()
     {
         _rng = new System.Random(Environment.TickCount ^ GetInstanceID());
@@ -99,17 +99,14 @@ public class BaseRoomGenerator : MonoBehaviour
 
         // Prewarm minimal (opcional) — evita hitches no primeiro uso
         if (voxelFundamentalPrefab != null && initialPoolPerPrefab > 0)
-        {
             PrewarmPool(voxelFundamentalPrefab, Mathf.Min(initialPoolPerPrefab, 256));
-        }
     }
-
     #endregion
 
     #region Public API - Generate / Clear
-
     // Overloads compatíveis com GameFlowManager e outros:
     public virtual void GenerateRoom() => GenerateRoom(roomOriginGrid, roomSize);
+
     public virtual void GenerateRoom(Vector2Int size) => GenerateRoom(roomOriginGrid, size);
 
     public virtual void GenerateRoom(Vector2Int originGrid, Vector2Int size)
@@ -130,6 +127,11 @@ public class BaseRoomGenerator : MonoBehaviour
                 room.voxels.Add(go);
             }
         }
+
+        // Como este gerador base não preenche portas, nada a reindexar aqui.
+        // Geradores especializados devem chamar:
+        // EnsureDoorController(room.entryDoorRoot, entryRect) / EnsureDoorController(room.exitDoorRoot, exitRect)
+        // após preencher as “cortinas” de voxels via BuildDoorwayFill(...).
     }
 
     /// <summary>Clear and return voxels/props for the given room.</summary>
@@ -164,11 +166,14 @@ public class BaseRoomGenerator : MonoBehaviour
         // remover do índice e destruir root
         if (room.root != null)
         {
-            if (_roomsByRoot.ContainsKey(room.root))
-                _roomsByRoot.Remove(room.root);
-
+            if (_roomsByRoot.ContainsKey(room.root)) _roomsByRoot.Remove(room.root);
             UnregisterDebugRoom(room);
+#if UNITY_EDITOR
+            if (!Application.isPlaying) DestroyImmediate(room.root.gameObject);
+            else Destroy(room.root.gameObject);
+#else
             Destroy(room.root.gameObject);
+#endif
             room.root = null;
         }
     }
@@ -190,19 +195,21 @@ public class BaseRoomGenerator : MonoBehaviour
             return;
         }
 
+#if UNITY_EDITOR
+        if (!Application.isPlaying) DestroyImmediate(container.gameObject);
+        else Destroy(container.gameObject);
+#else
         Destroy(container.gameObject);
+#endif
     }
 
     public virtual void ClearRoom(GameObject container) => ClearRoom(container ? container.transform : null);
-
     #endregion
 
     #region Pooling (protected)
-
     private void PrewarmPool(GameObject prefab, int count)
     {
         if (prefab == null || count <= 0) return;
-
         if (!_pool.ContainsKey(prefab)) _pool[prefab] = new Queue<GameObject>();
         var q = _pool[prefab];
 
@@ -216,7 +223,7 @@ public class BaseRoomGenerator : MonoBehaviour
 
             q.Enqueue(go);
 
-            // parent to rooms root to keep hierarchy clean
+            // parent para manter hierarquia limpa
             if (_roomsRoot != null) go.transform.SetParent(_roomsRoot, true);
         }
     }
@@ -226,7 +233,6 @@ public class BaseRoomGenerator : MonoBehaviour
         if (prefab == null) return null;
 
         GameObject go = null;
-
         if (_pool.TryGetValue(prefab, out var q) && q.Count > 0)
         {
             go = q.Dequeue();
@@ -242,7 +248,7 @@ public class BaseRoomGenerator : MonoBehaviour
         go.transform.rotation = rot;
         go.SetActive(true);
 
-        // Ensure PoolableObject tag exists
+        // Ensure PoolableObject tag existe
         var tag = go.GetComponent<PoolableObject>() ?? go.AddComponent<PoolableObject>();
         tag.OriginalPrefab = prefab;
 
@@ -256,13 +262,19 @@ public class BaseRoomGenerator : MonoBehaviour
         var tag = go.GetComponent<PoolableObject>();
         if (tag == null || tag.OriginalPrefab == null)
         {
+            // objeto não saiu do pool — destruir
+#if UNITY_EDITOR
+            if (!Application.isPlaying) DestroyImmediate(go);
+            else Destroy(go);
+#else
             Destroy(go);
+#endif
             return;
         }
 
         go.SetActive(false);
 
-        // reparent to root to keep hierarchy tidy
+        // reparent para manter hierarquia organizada
         if (_roomsRoot != null) go.transform.SetParent(_roomsRoot, true);
 
         if (!_pool.ContainsKey(tag.OriginalPrefab))
@@ -270,11 +282,9 @@ public class BaseRoomGenerator : MonoBehaviour
 
         _pool[tag.OriginalPrefab].Enqueue(go);
     }
-
     #endregion
 
     #region Utilities (protected / public)
-
     // Protected para uso por classes derivadas
     protected Vector3 GridToWorld(Vector2Int grid)
     {
@@ -293,9 +303,9 @@ public class BaseRoomGenerator : MonoBehaviour
         var room = new RoomInstance
         {
             // plan: ficará a cargo do orquestrador preencher, se necessário
-            root = go.transform,
+            root      = go.transform,
             voxelSize = voxelSize,
-            built = false,
+            built     = false,
             populated = false
         };
 
@@ -310,18 +320,23 @@ public class BaseRoomGenerator : MonoBehaviour
         exitGO.transform.localPosition = Vector3.zero;
         room.exitDoorRoot = exitGO.transform;
 
+        // PR-02 (robustez): garante VoxelDoorController anexado aos roots de porta.
+        EnsureDoorController(room.entryDoorRoot); // indexação ocorrerá quando a cortina existir
+        EnsureDoorController(room.exitDoorRoot);  // idem
+
         _roomsByRoot[room.root] = room;
         RegisterDebugRoom(room);
         return room;
     }
 
-    // Public coroutine to play a simple appear animation (compatível com callers que usam StartCoroutine or yield)
-    // Exemplo de uso: StartCoroutine(base.PlaySpawnAppear(someTransform, 0.12f));
+    /// <summary>
+    /// Coroutine simples de "aparecer" (compatível com StartCoroutine/yield), útil para feedback visual.
+    /// </summary>
     public IEnumerator PlaySpawnAppear(Transform t, float duration)
     {
         if (t == null) yield break;
-
         duration = Mathf.Max(0.0001f, duration);
+
         Vector3 targetScale = t.localScale;
         t.localScale = Vector3.zero;
 
@@ -330,7 +345,7 @@ public class BaseRoomGenerator : MonoBehaviour
         {
             elapsed += Time.deltaTime;
             float k = Mathf.Clamp01(elapsed / duration);
-            // suavização (ease-out)
+            // ease-out
             k = 1f - Mathf.Pow(1f - k, 2f);
             t.localScale = Vector3.LerpUnclamped(Vector3.zero, targetScale, k);
             yield return null;
@@ -338,11 +353,122 @@ public class BaseRoomGenerator : MonoBehaviour
 
         t.localScale = targetScale;
     }
+    #endregion
 
+    #region Door Controller Helpers (NEW)
+    /// <summary>
+    /// Garante que exista um VoxelDoorController no root informado e reindexa a “cortina”.
+    /// Use esta versão quando não houver (ou não importar) o lado da parede ainda.
+    /// </summary>
+    protected void EnsureDoorController(Transform doorRoot)
+    {
+        if (!doorRoot) return;
+
+        var ctrl = doorRoot.GetComponent<VoxelDoorController>();
+        if (!ctrl) ctrl = doorRoot.gameObject.AddComponent<VoxelDoorController>();
+
+        // Tenta usar InitializeFromChildren() se existir (indexação interna da cortina)
+        if (!TryInvokeNoThrow(ctrl, "InitializeFromChildren"))
+        {
+            // Fallback: tenta Clear(); depois AddVoxel(child) por reflexão
+            TryInvokeNoThrow(ctrl, "Clear");
+
+            int childCount = doorRoot.childCount;
+            for (int i = 0; i < childCount; i++)
+            {
+                var child = doorRoot.GetChild(i);
+                if (!child) continue;
+                // Somente objetos ativos contam como parte da “cortina”
+                if (!child.gameObject.activeSelf) continue;
+
+                if (!TryInvokeNoThrow(ctrl, "AddVoxel", new object[] { child }))
+                {
+                    // Se não existe AddVoxel(Transform), não há mais nada seguro a fazer.
+                    // O controller ainda estará anexado para responder a sinais Open/Close.
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Versão com DoorRect: se o VoxelDoorController expuser Setup(WallSide, float),
+    /// passamos o lado e o voxelSize para ordenar a onda de animação.
+    /// </summary>
+    protected void EnsureDoorController(Transform doorRoot, in DoorRect rect)
+    {
+        EnsureDoorController(doorRoot);
+
+        var ctrl = doorRoot ? doorRoot.GetComponent<VoxelDoorController>() : null;
+        if (!ctrl) return;
+
+        // Tenta Setup(WallSide, float) por reflexão (mantém compatibilidade com versões antigas)
+        TryInvokeNoThrow(ctrl, "Setup", new object[] { rect.side, voxelSize });
+
+        // Reindexa após eventual Setup
+        ReindexDoorCurtain(doorRoot);
+    }
+
+    /// <summary>
+    /// Reindexa a cortina após mudanças nos filhos (ex.: depois de BuildDoorwayFill).
+    /// </summary>
+    public void ReindexDoorCurtain(Transform doorRoot)
+    {
+        if (!doorRoot) return;
+
+        var ctrl = doorRoot.GetComponent<VoxelDoorController>();
+        if (!ctrl) return;
+
+        if (!TryInvokeNoThrow(ctrl, "InitializeFromChildren"))
+        {
+            // Fallback igual ao Ensure...
+            TryInvokeNoThrow(ctrl, "Clear");
+            int childCount = doorRoot.childCount;
+            for (int i = 0; i < childCount; i++)
+            {
+                var child = doorRoot.GetChild(i);
+                if (!child || !child.gameObject.activeSelf) continue;
+                TryInvokeNoThrow(ctrl, "AddVoxel", new object[] { child });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Invoca método público por nome (sem exceção). Retorna true se método foi encontrado e invocado.
+    /// </summary>
+    private static bool TryInvokeNoThrow(object target, string methodName, object[] args = null)
+    {
+        if (target == null || string.IsNullOrEmpty(methodName)) return false;
+
+        try
+        {
+            var t = target.GetType();
+            MethodInfo m;
+            if (args == null || args.Length == 0)
+                m = t.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+            else
+            {
+                var argTypes = new Type[args.Length];
+                for (int i = 0; i < args.Length; i++)
+                    argTypes[i] = args[i]?.GetType() ?? typeof(object);
+
+                // Busca por assinatura exata primeiro, depois por nome (qualquer assinatura pública)
+                m = t.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public, null, argTypes, null)
+                 ?? t.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+            }
+
+            if (m == null) return false;
+            m.Invoke(target, args == null ? Array.Empty<object>() : args);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
     #endregion
 
     #region Debug helpers
-
     private void RegisterDebugRoom(RoomInstance room)
     {
         if (room == null) return;
@@ -354,6 +480,5 @@ public class BaseRoomGenerator : MonoBehaviour
         if (room == null) return;
         if (debugRoomInstances.Contains(room)) debugRoomInstances.Remove(room);
     }
-
     #endregion
 }
