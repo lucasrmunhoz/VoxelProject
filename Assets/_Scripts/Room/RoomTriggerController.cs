@@ -139,7 +139,6 @@ public sealed class RoomTriggerController : MonoBehaviour
                 SetChildrenActive(entryDoorRoot, true);
                 yield return null;
             }
-
             onEntryClosed?.Invoke();
         }
 
@@ -228,7 +227,10 @@ public sealed class RoomTriggerController : MonoBehaviour
 
             if (box)
             {
-                Matrix4x4 m = Matrix4x4.TRS(box.transform.TransformPoint(box.center), box.transform.rotation, box.transform.lossyScale);
+                Matrix4x4 m = Matrix4x4.TRS(
+                    box.transform.TransformPoint(box.center),
+                    box.transform.rotation,
+                    box.transform.lossyScale);
                 using (new UnityEditor.Handles.DrawingScope(m))
                 {
                     UnityEditor.Handles.DrawWireCube(Vector3.zero, box.size);
@@ -236,7 +238,10 @@ public sealed class RoomTriggerController : MonoBehaviour
             }
             else if (sph)
             {
-                Matrix4x4 m = Matrix4x4.TRS(sph.transform.TransformPoint(sph.center), sph.transform.rotation, sph.transform.lossyScale);
+                Matrix4x4 m = Matrix4x4.TRS(
+                    sph.transform.TransformPoint(sph.center),
+                    sph.transform.rotation,
+                    sph.transform.lossyScale);
                 using (new UnityEditor.Handles.DrawingScope(m))
                 {
                     UnityEditor.Handles.DrawWireDisc(Vector3.zero, Vector3.up, sph.radius);
@@ -245,7 +250,10 @@ public sealed class RoomTriggerController : MonoBehaviour
             else if (cap)
             {
                 // Representação aproximada
-                Matrix4x4 m = Matrix4x4.TRS(cap.transform.TransformPoint(cap.center), cap.transform.rotation, cap.transform.lossyScale);
+                Matrix4x4 m = Matrix4x4.TRS(
+                    cap.transform.TransformPoint(cap.center),
+                    cap.transform.rotation,
+                    cap.transform.lossyScale);
                 using (new UnityEditor.Handles.DrawingScope(m))
                 {
                     UnityEditor.Handles.DrawWireDisc(Vector3.zero, Vector3.up, cap.radius);

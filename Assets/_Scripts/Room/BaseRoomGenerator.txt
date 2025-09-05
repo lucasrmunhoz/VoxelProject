@@ -10,7 +10,7 @@ using System.Reflection;
 using UnityEngine;
 using RoomInstance = RoomsData.RoomInstance;
 using DoorRect     = RoomsData.DoorRect;
-using WallSide     = WallSide;
+using WallSide     = RoomsData.WallSide;
 
 [DisallowMultipleComponent]
 public class BaseRoomGenerator : MonoBehaviour

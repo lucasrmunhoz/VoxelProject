@@ -1,5 +1,4 @@
 // GameSignals.cs
-//
 // Barramento de eventos do fluxo de jogo, desacoplando GameFlowManager,
 // geradores de sala, portas e UI. Usa backing fields com reset seguro
 // via SubsystemRegistration (útil quando Domain Reload está desativado).
@@ -8,20 +7,20 @@ using System;
 using UnityEngine;
 
 // Aliases para os tipos do contrato único declarado em RoomsData
-using RoomPlan = RoomsData.RoomPlan;
+using RoomPlan     = RoomsData.RoomPlan;
 using RoomInstance = RoomsData.RoomInstance;
 
 public static class GameSignals
 {
     // --------------------------------------------------------------------
-    // Backing fields (mantêm referência real; os "event" públicos encap-sulam)
+    // Backing fields (mantêm referência real; os "event" públicos encapsulam)
     // --------------------------------------------------------------------
-    private static Action<RoomPlan>        s_roomPlanned;
-    private static Action<RoomInstance>    s_roomBuilt;
-    private static Action<RoomInstance>    s_roomPopulated;
-    private static Action<RoomInstance>    s_roomLightOn;
-    private static Action<int>             s_requestNextRoom;
-    private static Action<RoomInstance>    s_roomShouldOpenExit;
+    private static Action<RoomPlan>     s_roomPlanned;
+    private static Action<RoomInstance> s_roomBuilt;
+    private static Action<RoomInstance> s_roomPopulated;
+    private static Action<RoomInstance> s_roomLightOn;
+    private static Action<int>          s_requestNextRoom;
+    private static Action<RoomInstance> s_roomShouldOpenExit;
 
     // --------------------------------------------------------------------
     // Eventos públicos
@@ -76,21 +75,21 @@ public static class GameSignals
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetStatics()
     {
-        s_roomPlanned         = null;
-        s_roomBuilt           = null;
-        s_roomPopulated       = null;
-        s_roomLightOn         = null;
-        s_requestNextRoom     = null;
-        s_roomShouldOpenExit  = null;
+        s_roomPlanned        = null;
+        s_roomBuilt          = null;
+        s_roomPopulated      = null;
+        s_roomLightOn        = null;
+        s_requestNextRoom    = null;
+        s_roomShouldOpenExit = null;
     }
 
     // --------------------------------------------------------------------
     // Emissores (chame estes métodos para disparar os eventos)
     // --------------------------------------------------------------------
-    public static void EmitRoomPlanned(RoomPlan plan)                   => s_roomPlanned?.Invoke(plan);
-    public static void EmitRoomBuilt(RoomInstance inst)                 => s_roomBuilt?.Invoke(inst);
-    public static void EmitRoomPopulated(RoomInstance inst)             => s_roomPopulated?.Invoke(inst);
-    public static void EmitRoomLightOn(RoomInstance inst)               => s_roomLightOn?.Invoke(inst);
-    public static void EmitRequestNextRoom(int roomIndex)               => s_requestNextRoom?.Invoke(roomIndex);
-    public static void EmitRoomShouldOpenExit(RoomInstance currentRoom) => s_roomShouldOpenExit?.Invoke(currentRoom);
+    public static void EmitRoomPlanned(in RoomPlan plan)                  => s_roomPlanned?.Invoke(plan);
+    public static void EmitRoomBuilt(RoomInstance inst)                   => s_roomBuilt?.Invoke(inst);
+    public static void EmitRoomPopulated(RoomInstance inst)               => s_roomPopulated?.Invoke(inst);
+    public static void EmitRoomLightOn(RoomInstance inst)                 => s_roomLightOn?.Invoke(inst);
+    public static void EmitRequestNextRoom(int roomIndex)                 => s_requestNextRoom?.Invoke(roomIndex);
+    public static void EmitRoomShouldOpenExit(RoomInstance currentRoom)   => s_roomShouldOpenExit?.Invoke(currentRoom);
 }
