@@ -1,7 +1,7 @@
 # Scripts RAW Index
 
 - **Árvore no GitHub**: https://github.com/lucasrmunhoz/VoxelProject/tree/main/Assets/_Scripts
-- **Gerado em**: 2025-09-05 01:21:52
+- **Gerado em**: 2025-09-05 01:47:37
 
 
 ## Player

@@ -6,8 +6,11 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-// === Tipos de contrato vêm de RoomsData ===
-// using WallSide; using DoorRect; using RoomPlan; using RoomInstance;
+// Aliases explícitos para os contratos únicos
+using RoomPlan = RoomsData.RoomPlan;
+using RoomInstance = RoomsData.RoomInstance;
+using DoorRect = RoomsData.DoorRect;
+using WallSide = RoomsData.WallSide;
 
 [DisallowMultipleComponent]
 public class BedroomGenerator : BaseRoomGenerator
