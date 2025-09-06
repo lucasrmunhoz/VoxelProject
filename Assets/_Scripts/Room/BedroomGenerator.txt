@@ -1,20 +1,24 @@
-// BedroomGenerator.cs
-// Gera uma sala “Bedroom” simples: estrutura oca (chão + paredes) e popula com props básicos.
-// Mudança mínima p/ PR-02: apenas aliases para tipos de RoomsData.
-// Mantido o restante da lógica exatamente como no original.
+// Assets/_Scripts/Room/BedroomGenerator.cs
+// PR-03 — Integração com VoxelPool (mantendo estrutura original)
+// Alterações mínimas:
+// 1) Geração de voxels e props via BaseRoomGenerator.SpawnFromPool(...) (rota padrão → VoxelPool; com fallback local).
+// 2) Correção de referências a tipos de RoomsData via aliases (evita CS0246).
+// 3) Mantidas as assinaturas e comportamento do arquivo original (inclusive "new" nos overloads de GenerateRoom).
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-// Aliases para o contrato único em RoomsData (evita CS0246/CS0576)
-using RoomPlan     = RoomsData.RoomPlan;
+// ==== Aliases para evitar CS0246 com o contrato central em RoomsData ====
 using RoomInstance = RoomsData.RoomInstance;
+using RoomPlan     = RoomsData.RoomPlan;
 
 [DisallowMultipleComponent]
 public class BedroomGenerator : BaseRoomGenerator
 {
     #region Inspector
+
     [Header("Seed / Random")]
     [Tooltip("0 = aleatória por hora (não determinística).")]
     public int randomSeed = 0;
@@ -27,12 +31,14 @@ public class BedroomGenerator : BaseRoomGenerator
     public struct RoomProp
     {
         public GameObject prefab;
-        public Vector2Int size;         // tamanho em grid (X,Z)
+
+        [Tooltip("Tamanho em grid (X,Z) do 'bounding' do prop.")]
+        public Vector2Int size;
 
         [Tooltip("Se verdadeiro, tenta encostar na parede.")]
         public bool placeOnWall;
 
-        [Tooltip("Se verdadeiro e não for de parede, gira aleatoriamente em Y.")]
+        [Tooltip("Se verdadeiro e não for de parede, gira aleatoriamente em Y (múltiplos de 90°).")]
         public bool randomRotation;
 
         [Range(0f, 1f)]
@@ -41,6 +47,7 @@ public class BedroomGenerator : BaseRoomGenerator
 
     [Header("Bedroom Prop List")]
     [SerializeField] private List<RoomProp> roomProps = new List<RoomProp>();
+
     #endregion
 
     // RNG local para props (separado do Base)
@@ -48,13 +55,17 @@ public class BedroomGenerator : BaseRoomGenerator
 
     private void Awake()
     {
-        // Seed local: mistura do randomSeed com o instanceID (igual ao base da versão RAW)
-        int seed = (randomSeed == 0) ? (Environment.TickCount ^ GetInstanceID()) : (randomSeed ^ GetInstanceID());
+        // Seed local: mistura do randomSeed com o instanceID (igual ao padrão do projeto)
+        int seed = (randomSeed == 0)
+            ? (Environment.TickCount ^ GetInstanceID())
+            : (randomSeed ^ GetInstanceID());
+
         _localRng = new System.Random(seed);
     }
 
     #region GenerateRoom Overloads (Compatíveis)
-    // Mantém assinaturas convenientes e retorna RoomInstance (tipo RoomsData)
+
+    // Mantém assinaturas convenientes e retorna RoomInstance (contrato RoomsData)
     public new RoomInstance GenerateRoom() => GenerateRoom(roomOriginGrid, roomSize);
 
     public new RoomInstance GenerateRoom(Vector2Int originGrid)
@@ -67,7 +78,8 @@ public class BedroomGenerator : BaseRoomGenerator
     }
 
     /// <summary>
-    /// Método principal: constrói a casca da sala e popula com props.
+    /// Método principal: constrói a casca da sala (chão + paredes) e popula com props.
+    /// Uso de SpawnFromPool (PR-03) com fallback local herdado do Base.
     /// </summary>
     public new RoomInstance GenerateRoom(Vector2Int originGrid, Vector2Int size)
     {
@@ -80,7 +92,6 @@ public class BedroomGenerator : BaseRoomGenerator
         }
 
         // 1.1) Preenche metadados mínimos no plano (útil para consumidores)
-        // Usa DoorRect padrão; geradores mais avançados podem definir entry/exit reais depois.
         room.plan = new RoomPlan(
             id: -1,
             gridOrigin: originGrid,
@@ -96,7 +107,7 @@ public class BedroomGenerator : BaseRoomGenerator
         room.builder   = this;
         room.voxelSize = voxelSize;
 
-        // 2) Construir estrutura básica: chão + paredes (sem arestas/quinas internas)
+        // 2) Construir estrutura básica: chão + paredes (sem arestas internas)
         var occupancy = new HashSet<Vector3Int>();
 
         // chão
@@ -121,21 +132,25 @@ public class BedroomGenerator : BaseRoomGenerator
 
         // 2.1) Instanciar voxels fundamentais conforme o mapa de ocupação
         Vector3 baseWorld = GridToWorld(originGrid);
+        if (room.voxels == null) room.voxels = new List<GameObject>(occupancy.Count);
+
         foreach (var pos in occupancy)
         {
             Vector3 worldPos = baseWorld + new Vector3(pos.x * voxelSize, pos.y * voxelSize, pos.z * voxelSize);
             var go = SpawnFromPool(voxelFundamentalPrefab, worldPos, Quaternion.identity, room.root);
-            if (go != null) room.voxels.Add(go);
+            if (go != null)
+                room.voxels.Add(go);
         }
 
         room.built = true;
 
         // 3) Popular com props
         PopulateRoomWithProps(room);
-        room.populated = true;
 
+        room.populated = true;
         return room;
     }
+
     #endregion
 
     /// <summary>
@@ -159,8 +174,8 @@ public class BedroomGenerator : BaseRoomGenerator
         foreach (var go in room.voxels)
         {
             if (go == null) continue;
-
             Vector3 local = go.transform.position - baseWorldPos;
+
             int gx = Mathf.RoundToInt(local.x / voxelSize);
             int gz = Mathf.RoundToInt(local.z / voxelSize);
             int gy = Mathf.RoundToInt(local.y / voxelSize);
@@ -209,16 +224,11 @@ public class BedroomGenerator : BaseRoomGenerator
 
                 if (mustBeOnWall)
                 {
-                    if (InBounds(gx - 1, gz) && isWall[gx - 1, gz])
-                        wallRot = Quaternion.LookRotation(Vector3.right);
-                    else if (InBounds(gx + aw, gz) && isWall[gx + aw, gz])
-                        wallRot = Quaternion.LookRotation(Vector3.left);
-                    else if (InBounds(gx, gz - 1) && isWall[gx, gz - 1])
-                        wallRot = Quaternion.LookRotation(Vector3.forward);
-                    else if (InBounds(gx, gz + ad) && isWall[gx, gz + ad])
-                        wallRot = Quaternion.LookRotation(Vector3.back);
-                    else
-                        continue; // não encostou em parede
+                    if (InBounds(gx - 1, gz)     && isWall[gx - 1, gz])     wallRot = Quaternion.LookRotation(Vector3.right);
+                    else if (InBounds(gx + aw, gz) && isWall[gx + aw, gz])   wallRot = Quaternion.LookRotation(Vector3.left);
+                    else if (InBounds(gx, gz - 1) && isWall[gx, gz - 1])     wallRot = Quaternion.LookRotation(Vector3.forward);
+                    else if (InBounds(gx, gz + ad) && isWall[gx, gz + ad])   wallRot = Quaternion.LookRotation(Vector3.back);
+                    else continue; // não encostou em parede
                 }
 
                 pos = new Vector2Int(gx, gz);
@@ -251,18 +261,19 @@ public class BedroomGenerator : BaseRoomGenerator
                     (found.y + (ad - 1) * 0.5f) * voxelSize
                 );
 
+                // PR-03: usa SpawnFromPool (rota padrão → VoxelPool) com fallback herdado
                 var spawned = SpawnFromPool(prop.prefab, center, rot, room.root);
                 if (spawned == null)
                     spawned = Instantiate(prop.prefab, center, rot, room.root);
 
-                // Garantir tag de pool para retorno correto
-                var tag = spawned.GetComponent<PoolableObject>();
-                if (tag == null) tag = spawned.AddComponent<PoolableObject>();
+                // Garantir tag de pool para retorno correto quando vier do fallback local
+                var tag = spawned.GetComponent<PoolableObject>() ?? spawned.AddComponent<PoolableObject>();
                 tag.OriginalPrefab = prop.prefab;
 
+                if (room.props == null) room.props = new List<GameObject>(8);
                 room.props.Add(spawned);
 
-                // Marca área ocupada (correção de Z conforme base RAW)
+                // Marca área ocupada
                 for (int ix = found.x; ix < found.x + aw; ix++)
                     for (int iz = found.y; iz < found.y + ad; iz++)
                         if (InBounds(ix, iz)) occupied[ix, iz] = true;
@@ -270,12 +281,17 @@ public class BedroomGenerator : BaseRoomGenerator
         }
 
         // Otimização simples: desativa sombras dos props para performance
-        foreach (var p in room.props)
+        if (room.props != null)
         {
-            if (!p) continue;
-            var rends = p.GetComponentsInChildren<Renderer>(true);
-            foreach (var r in rends)
-                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            for (int i = 0; i < room.props.Count; i++)
+            {
+                var p = room.props[i];
+                if (!p) continue;
+
+                var rends = p.GetComponentsInChildren<Renderer>(true);
+                for (int r = 0; r < rends.Length; r++)
+                    rends[r].shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            }
         }
     }
 }

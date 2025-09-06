@@ -90,3 +90,4 @@ public abstract class BaseVoxel : MonoBehaviour
         Initialize(_type, _isSolid);
     }
 }
+//

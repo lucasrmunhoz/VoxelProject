@@ -1,9 +1,11 @@
-// VoxelPool.cs
+// Assets/_Scripts/VoxelSystem/VoxelPool.cs
+// PR-03 — Unificação de pooling na geração (BaseRoomGenerator → VoxelPool)
+// Correção: REMOVIDA a declaração duplicada de IPoolable deste arquivo.
+// Mantido apenas o uso dos hooks (OnBeforeSpawn/OnAfterSpawn/OnBeforeDespawn/OnAfterDespawn).
+
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-
-#region Contracts
 
 /// <summary>
 /// Contrato para obtenção/devolução de instâncias via pool.
@@ -23,30 +25,12 @@ public interface IPooledFactory
 }
 
 /// <summary>
-/// (Opcional) Hooks de ciclo de vida para objetos que desejam ser notificados
-/// durante o fluxo de pool (sem alocações).
-/// </summary>
-public interface IPoolable
-{
-    // Objeto ainda INATIVO, antes de SetActive(true)
-    void OnBeforeSpawn();
-    // Objeto ATIVO, após SetActive(true)
-    void OnAfterSpawn();
-    // Objeto ATIVO, prestes a ser desativado
-    void OnBeforeDespawn();
-    // Objeto INATIVO, após SetActive(false)
-    void OnAfterDespawn();
-}
-
-#endregion
-
-/// <summary>
 /// Pool de objetos por ID de prefab, com bins por-prefab, preaquecer (prewarm),
 /// limite de capacidade, trimming e utilitários de limpeza em massa.
 /// Responsabilidades do pool:
 /// - Reparenting, ativação/desativação.
 /// - Garantir VoxelCache + PrefabId.
-/// - Chamar hooks de IPoolable/PoolableObject (se presentes).
+/// - Chamar hooks de IPoolable (se presentes).
 /// </summary>
 [AddComponentMenu("Voxel Nightmare/Voxel Pool")]
 public sealed class VoxelPool : MonoBehaviour, IPooledFactory
@@ -96,7 +80,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
     [Tooltip("Clampa a escala local no 'Get' para a escala do prefab, garantindo consistência.")]
     [SerializeField] private bool forcePrefabLocalScaleOnGet = true;
 
-    [Tooltip("Se verdadeiro, o pool chamará hooks de IPoolable/PoolableObject em spawn/despawn.")]
+    [Tooltip("Se verdadeiro, o pool chamará hooks de IPoolable em spawn/despawn.")]
     [SerializeField] private bool invokePoolableHooks = true;
 
     [Tooltip("Se verdadeiro, procura hooks IPoolable em toda a hierarquia (inativa). Custa mais.")]
@@ -201,7 +185,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
             var t = SpawnNewInactive(e);
             InternalDespawn(t, e);
             added++;
-            // se estourou e maxPoolSize, InternalDespawn fará trimming
+            // se estourou o maxPoolSize, InternalDespawn fará trimming
         }
         return added;
     }
@@ -298,7 +282,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         // ---- Hooks: OnBeforeSpawn (objeto ainda INATIVO) ----
         if (invokePoolableHooks)
         {
-            InvokePoolable(t, static p => p.OnBeforeSpawn());
+            InvokePoolable(t, p => p.OnBeforeSpawn());
         }
 
         // Ativa no final
@@ -308,7 +292,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         // ---- Hooks: OnAfterSpawn (objeto ATIVO) ----
         if (invokePoolableHooks)
         {
-            InvokePoolable(t, static p => p.OnAfterSpawn());
+            InvokePoolable(t, p => p.OnAfterSpawn());
         }
 
         return t;
@@ -321,7 +305,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         // ---- Hooks: OnBeforeDespawn (objeto ATIVO) ----
         if (invokePoolableHooks)
         {
-            InvokePoolable(instance, static p => p.OnBeforeDespawn());
+            InvokePoolable(instance, p => p.OnBeforeDespawn());
         }
 
         // Identidade do pool
@@ -343,7 +327,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
             // ---- Hooks: OnAfterDespawn (objeto INATIVO) ----
             if (invokePoolableHooks)
             {
-                InvokePoolable(instance, static p => p.OnAfterDespawn());
+                InvokePoolable(instance, p => p.OnAfterDespawn());
             }
             return;
         }
@@ -353,7 +337,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         // ---- Hooks: OnAfterDespawn (objeto INATIVO) ----
         if (invokePoolableHooks)
         {
-            InvokePoolable(instance, static p => p.OnAfterDespawn());
+            InvokePoolable(instance, p => p.OnAfterDespawn());
         }
     }
 
@@ -415,14 +399,8 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
 
         for (int i = 0; i < _poolableBuffer.Count; i++)
         {
-            try
-            {
-                call(_poolableBuffer[i]);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogException(ex);
-            }
+            try { call(_poolableBuffer[i]); }
+            catch (Exception ex) { Debug.LogException(ex); }
         }
 
         _poolableBuffer.Clear();

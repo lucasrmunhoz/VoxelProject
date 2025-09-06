@@ -1,10 +1,18 @@
-// SimpleRoomEditorWindow.cs
+// Assets/Editor/SimpleRoomEditorWindow.cs
 // Editor tool para criar salas estáticas no Editor do Unity.
-// Coloque em Assets/Editor/ para funcionar.
-// - Cria um GameObject container chamado "Room_WxDxH" com voxels instanciados como filhos.
-// - Aplica inicialização e otimização de faces automaticamente (correção crítica).
-// - Usa PrefabUtility.InstantiatePrefab quando possível (mantém ligação ao prefab).
+// - Cria um GameObject container "Room_WxDxH" com voxels como filhos.
+// - Aplica inicialização e otimização de faces automaticamente.
+// - Mantém ligação ao prefab quando possível (PrefabUtility).
 // - Suporta Undo e marca a cena como suja.
+// PR-03 (ajuste de Editor): cada voxel criado já sai preparado para o pooling em runtime.
+//   • Garante presença de PoolableObject (OriginalPrefab = voxelPrefab).
+//   • Garante presença de VoxelCache; se houver um VoxelPool na cena do Editor,
+//     registra o prefab e grava o PrefabId no VoxelCache imediatamente.
+//   • Se não houver VoxelPool no momento da criação, o PoolableObject permitirá
+//     que o mapeamento PrefabId seja resolvido em runtime (pelo script PoolableObject.cs).
+//
+// Observação: coloque este arquivo em Assets/Editor/.
+
 using System;
 using System.Linq;
 using System.Reflection;
@@ -38,8 +46,8 @@ public class SimpleRoomEditorWindow : EditorWindow
     // Parent / naming
     string roomNamePrefix = "Room";
     Transform parentForRoom = null;
-    
-    // SUGESTÃO 2: Variável para controlar a posição de origem da sala
+
+    // Posição global do container
     Vector3 roomOrigin = Vector3.zero;
 
     // Guarda referência ao último container criado para ClearLastCreatedRoom
@@ -88,10 +96,8 @@ public class SimpleRoomEditorWindow : EditorWindow
         EditorGUILayout.LabelField("Hierarchy & Positioning", EditorStyles.boldLabel);
         roomNamePrefix = EditorGUILayout.TextField("Room Name Prefix", roomNamePrefix);
         parentForRoom = (Transform)EditorGUILayout.ObjectField("Parent Transform (optional)", parentForRoom, typeof(Transform), true);
-        
-        // SUGESTÃO 2: Campo para editar a origem da sala na UI
         roomOrigin = EditorGUILayout.Vector3Field("Room Origin", roomOrigin);
-        
+
         EditorGUILayout.Space();
 
         EditorGUILayout.BeginHorizontal();
@@ -99,7 +105,9 @@ public class SimpleRoomEditorWindow : EditorWindow
         {
             if (voxelPrefab == null)
             {
-                if (!EditorUtility.DisplayDialog("Voxel Prefab não atribuido", "Nenhum voxel prefab foi atribuído. Deseja continuar e criar objetos vazios (GameObjects) em vez de prefabs?", "Sim", "Não"))
+                if (!EditorUtility.DisplayDialog("Voxel Prefab não atribuído",
+                        "Nenhum voxel prefab foi atribuído. Deseja continuar e criar objetos vazios (GameObjects) em vez de prefabs?",
+                        "Sim", "Não"))
                     return;
             }
             CreateRoom();
@@ -131,13 +139,13 @@ public class SimpleRoomEditorWindow : EditorWindow
 
         // Lógica para as paredes do perímetro
         var mask = VoxelFaceController.Face.None;
-        if (x == 0) mask |= VoxelFaceController.Face.East;
-        if (x == w - 1) mask |= VoxelFaceController.Face.West;
-        if (z == 0) mask |= VoxelFaceController.Face.North;
-        if (z == d - 1) mask |= VoxelFaceController.Face.South;
+        if (x == 0)      mask |= VoxelFaceController.Face.East;
+        if (x == w - 1)  mask |= VoxelFaceController.Face.West;
+        if (z == 0)      mask |= VoxelFaceController.Face.North;
+        if (z == d - 1)  mask |= VoxelFaceController.Face.South;
 
         // Se a parede também for chão ou teto, adicione essas faces.
-        if (y == 0 && buildFloor) mask |= VoxelFaceController.Face.Top;
+        if (y == 0 && buildFloor)       mask |= VoxelFaceController.Face.Top;
         if (y == h - 1 && buildCeiling) mask |= VoxelFaceController.Face.Bottom;
 
         return mask;
@@ -152,7 +160,7 @@ public class SimpleRoomEditorWindow : EditorWindow
         string containerName = $"{roomNamePrefix}_{width}x{depth}x{height}";
         var containerGO = new GameObject(containerName);
 
-        // SUGESTÃO 2: Define a posição global do container da sala com a variável
+        // Posiciona o container
         containerGO.transform.position = roomOrigin;
 
         if (parentForRoom != null) containerGO.transform.SetParent(parentForRoom, false);
@@ -201,6 +209,21 @@ public class SimpleRoomEditorWindow : EditorWindow
             return false;
         }
 
+        // Tenta localizar um VoxelPool na cena (Editor). Se existir, já registra o prefab e obtém o id.
+        int editorPrefabId = -1;
+        VoxelPool editorPool = FindObjectOfType<VoxelPool>();
+        if (editorPool != null && voxelPrefab != null)
+        {
+            try
+            {
+                editorPrefabId = editorPool.RegisterPrefab(voxelPrefab, maxPoolSize: 512, prewarm: 0);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[SimpleRoomEditorWindow] Não foi possível registrar prefab no VoxelPool do Editor: {ex.Message}");
+            }
+        }
+
         // Spawn loop: coloca floor/walls/ceiling conforme flags
         for (int y = 0; y < height; y++)
         {
@@ -208,36 +231,14 @@ public class SimpleRoomEditorWindow : EditorWindow
             {
                 for (int x = 0; x < width; x++)
                 {
-                    // --- SUGESTÃO DE ALTERAÇÃO ---
-                    // Esta nova lógica unificada gera voxels apenas se eles pertencerem a UMA ÚNICA face.
+                    // Gera voxels apenas em um plano (evita arestas/quinas)
                     int planeCount = 0;
-                    
-                    // O voxel está em um plano horizontal (chão ou teto)?
-                    if ((y == 0 && buildFloor) || (y == height - 1 && buildCeiling))
-                    {
-                        planeCount++;
-                    }
-                    
-                    // O voxel está em um plano vertical no eixo Z (paredes Norte/Sul)?
-                    if ((z == 0 || z == depth - 1) && buildWalls)
-                    {
-                        planeCount++;
-                    }
-                    
-                    // O voxel está em um plano vertical no eixo X (paredes Leste/Oeste)?
-                    if ((x == 0 || x == width - 1) && buildWalls)
-                    {
-                        planeCount++;
-                    }
-                    
-                    // Só gera o voxel se ele estiver em exatamente UM plano.
-                    // Se planeCount > 1, significa que é uma aresta. Se planeCount > 2, é uma quina.
-                    if (planeCount != 1)
-                    {
-                        continue;
-                    }
-                    // --- FIM DA SUGESTÃO ---
 
+                    if ((y == 0 && buildFloor) || (y == height - 1 && buildCeiling)) planeCount++;
+                    if ((z == 0 || z == depth - 1) && buildWalls) planeCount++;
+                    if ((x == 0 || x == width - 1) && buildWalls) planeCount++;
+
+                    if (planeCount != 1) continue;
                     if (ShouldSkipDueToDoor(x, y, z)) continue;
 
                     GameObject go = null;
@@ -271,22 +272,23 @@ public class SimpleRoomEditorWindow : EditorWindow
                     // Register undo for created voxel
                     Undo.RegisterCreatedObjectUndo(go, "Create Voxel");
 
-                    // parent and set local transform
+                    // parent e transform local
                     go.transform.SetParent(containerGO.transform, false);
                     Vector3 localPos = new Vector3(x * voxelSize, y * voxelSize, z * voxelSize);
                     go.transform.localPosition = localPos;
                     go.transform.localRotation = Quaternion.identity;
 
-                    // *** INÍCIO DA NOVA CORREÇÃO SIMPLIFICADA ***
+                    // === PREPARO PARA POOLING EM RUNTIME (PR-03) ===
+                    TrySetupPoolingFor(go, voxelPrefab, editorPool, editorPrefabId);
+
+                    // Inicialização de voxel + máscara de faces
                     try
                     {
                         var baseVoxel = go.GetComponent<BaseVoxel>();
                         if (baseVoxel != null)
                         {
-                            // Primeiro, inicializa o estado base do voxel
                             baseVoxel.Initialize(VoxelType.Empty, true);
 
-                            // Em seguida, calcula e aplica a máscara de face correta para otimização
                             var mask = CalculateFaceMask(x, y, z, width, depth, height);
 
                             var faceController = go.GetComponent<VoxelFaceController>();
@@ -294,7 +296,7 @@ public class SimpleRoomEditorWindow : EditorWindow
                             {
                                 faceController.ApplyFaceMask(mask, true);
                             }
-                            else // Fallback se estiver usando CompositeVoxel
+                            else
                             {
                                 var compositeVoxel = go.GetComponent<CompositeVoxel>();
                                 if (compositeVoxel != null)
@@ -310,18 +312,55 @@ public class SimpleRoomEditorWindow : EditorWindow
                     }
                     catch (Exception ex)
                     {
-                        // Mudamos para LogError para a mensagem ficar vermelha e mais visível
                         Debug.LogError($"[SimpleRoomEditorWindow] Erro ao inicializar o voxel '{go.name}': {ex.Message}\n{ex.StackTrace}");
                     }
-                    // *** FIM DA NOVA CORREÇÃO SIMPLIFICADA ***
                 } // x
             } // z
         } // y
 
-        // Final touches: select container and mark scene dirty
+        // Final: seleciona container e marca cena suja
         Selection.activeGameObject = containerGO;
         EditorSceneManager.MarkSceneDirty(containerGO.scene);
         _lastCreatedContainer = containerGO;
+    }
+
+    /// <summary>
+    /// Garante que o voxel recém-criado esteja pronto para o sistema de pooling/caching no runtime.
+    /// - PoolableObject com OriginalPrefab preenchido (usado como fallback para mapear PrefabId em runtime).
+    /// - VoxelCache presente; se houver um VoxelPool no Editor, grava o PrefabId agora.
+    /// </summary>
+    private static void TrySetupPoolingFor(GameObject go, GameObject sourcePrefab, VoxelPool editorPool, int editorPrefabId)
+    {
+        if (go == null) return;
+
+        // 1) Tag do fallback de pooling (para runtime mapear o PrefabId caso esteja faltando)
+        var tag = go.GetComponent<PoolableObject>() ?? go.AddComponent<PoolableObject>();
+        tag.OriginalPrefab = sourcePrefab;
+
+        // 2) Cache para o VoxelPool (PrefabId + refs internas)
+        var cache = go.GetComponent<VoxelCache>() ?? go.AddComponent<VoxelCache>();
+        cache.EnsureCached();
+
+        // Se estamos no Editor e há um VoxelPool na cena, já gravamos o PrefabId.
+        if (editorPool != null && sourcePrefab != null && editorPrefabId > 0)
+        {
+            try
+            {
+                // Garante que o id ainda é válido para este VoxelPool
+                int id = editorPool.RegisterPrefab(sourcePrefab, maxPoolSize: 512, prewarm: 0);
+                if (id > 0) cache.SetPrefabId(id);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[SimpleRoomEditorWindow] Falha ao definir PrefabId no VoxelCache: {ex.Message}");
+            }
+        }
+        else
+        {
+            // Sem VoxelPool no editor agora: tudo bem. Em runtime,
+            // PoolableObject/gerador fará o mapeamento e atualizará o VoxelCache.
+            // (PrefabId permanecerá zerado até lá.)
+        }
     }
 
     void ClearLastCreatedRoom()
