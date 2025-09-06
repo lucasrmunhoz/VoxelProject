@@ -1,12 +1,14 @@
 // VoxelDoorController.cs
-using UnityEngine;
+// Controla uma porta composta por múltiplos voxels. Gerencia a animação de abrir/fechar,
+// o estado de travamento e a interação com o jogador (IInteractable) e o GameFlowManager.
+
 using System.Collections;
 using System.Collections.Generic;
+using UnityEngine;
 
-/// <summary>
-/// Controla uma porta composta por múltiplos voxels. Gerencia a animação de abrir/fechar,
-/// o estado de travamento e a interação com o jogador (IInteractable) e o GameFlowManager.
-/// </summary>
+// Alias para os tipos do contrato único em RoomsData (PR-02)
+using WallSide = RoomsData.WallSide;
+
 [RequireComponent(typeof(AudioSource))]
 public class VoxelDoorController : MonoBehaviour, IInteractable
 {
@@ -14,10 +16,10 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
     // Estado original de cada voxel, usado para restaurar ao fechar
     private struct VoxelState
     {
-        public Transform VoxelTransform;
-        public Vector3   OriginalPosition;
-        public Quaternion OriginalRotation;
-        public Vector3   OriginalScale;
+        public Transform      VoxelTransform;
+        public Vector3        OriginalPosition;
+        public Quaternion     OriginalRotation;
+        public Vector3        OriginalScale;
         public CompositeVoxel VoxelComponent; // cache p/ feedback visual
     }
 
@@ -47,21 +49,22 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
 
     [Header("Feedback de Foco (IInteractable)")]
     [SerializeField] private Color _defaultColor = Color.gray;
-    [SerializeField] private Color _focusColor   = Color.yellow;
-    [SerializeField] private Color _lockedColor  = new Color(0.8f, 0.2f, 0.2f);
+    [SerializeField] private Color _focusColor  = Color.yellow;
+    [SerializeField] private Color _lockedColor = new Color(0.8f, 0.2f, 0.2f);
 
     [Header("Ordenação de Onda (opcional)")]
     [SerializeField] private WallSide _wallSide = WallSide.North;
-    [SerializeField, Min(0.0001f)] private float _voxelWorldSize = 1f;
+
+    [SerializeField, Min(0.0001f)]
+    private float _voxelWorldSize = 1f;
 
     // ---------------------- Estado Interno ----------------------
     private readonly List<VoxelState> _doorVoxels = new List<VoxelState>();
-    private bool _isOpen   = false;
-    private bool _isLocked = false;
-    private bool _isMoving = false;
-
+    private bool        _isOpen   = false;
+    private bool        _isLocked = false;
+    private bool        _isMoving = false;
     private AudioSource _audioSource;
-    private Coroutine _animationCoroutine;
+    private Coroutine   _animationCoroutine;
 
     // ---------------------- Inicialização ----------------------
     private void Awake()
@@ -69,9 +72,9 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
         _audioSource = GetComponent<AudioSource>();
 
         // Garante um BoxCollider no container para interações (economiza colliders por voxel)
-        if (GetComponent<BoxCollider>() == null)
+        if (!TryGetComponent<BoxCollider>(out var col))
         {
-            var col = gameObject.AddComponent<BoxCollider>();
+            col = gameObject.AddComponent<BoxCollider>();
             col.isTrigger = true; // facilita triggers de foco/interação
         }
     }
@@ -99,7 +102,7 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
             state.VoxelTransform.localScale    = state.OriginalScale;
         }
 
-        _isOpen   = false;
+        _isOpen = false;
         _isMoving = false;
     }
 
@@ -125,7 +128,7 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
 
             _doorVoxels.Add(new VoxelState
             {
-                VoxelTransform  = t,
+                VoxelTransform = t,
                 OriginalPosition = t.localPosition,
                 OriginalRotation = t.localRotation,
                 OriginalScale    = t.localScale,
@@ -177,7 +180,7 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
 
             _doorVoxels.Add(new VoxelState
             {
-                VoxelTransform   = child,
+                VoxelTransform = child,
                 OriginalPosition = child.localPosition,
                 OriginalRotation = child.localRotation,
                 OriginalScale    = child.localScale,
@@ -209,9 +212,10 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
     public void AddVoxel(Transform voxel)
     {
         if (!voxel) return;
+
         _doorVoxels.Add(new VoxelState
         {
-            VoxelTransform   = voxel,
+            VoxelTransform = voxel,
             OriginalPosition = voxel.localPosition,
             OriginalRotation = voxel.localRotation,
             OriginalScale    = voxel.localScale,
@@ -222,7 +226,7 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
     // ===========================================================
     // API PÚBLICA (Door)
     // ===========================================================
-    public bool IsOpen => _isOpen;
+    public bool IsOpen   => _isOpen;
     public bool IsMoving => _isMoving;
 
     public void Open()  => SetOpen(true);
@@ -237,13 +241,13 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
 
     /// <summary>
     /// Aplica abertura/fechamento com guards de idempotência e corrida:
-    /// - Ignora se já está no estado desejado.
+    /// - Ignora se já está no estado desejado;
     /// - Ignora se já está animando (protege contra sinais repetidos).
     /// </summary>
     public void SetOpen(bool open)
     {
-        if (_isOpen == open) return;     // idempotência
-        if (_isMoving) return;           // evita corrida
+        if (_isOpen == open) return; // idempotência
+        if (_isMoving)        return; // evita corrida
 
         if (_animationCoroutine != null)
             StopCoroutine(_animationCoroutine);
@@ -259,6 +263,7 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
     public bool Interact(GameObject interactor)
     {
         if (_isMoving) return false;
+
         if (_isLocked)
         {
             if (_lockedSound) _audioSource.PlayOneShot(_lockedSound);
@@ -298,7 +303,8 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
 
         // Espera o tempo total passar (aproximação simples)
         float totalDuration = _animationDuration + (count * _voxelAnimationDelay);
-        if (totalDuration > 0f) yield return new WaitForSeconds(totalDuration);
+        if (totalDuration > 0f)
+            yield return new WaitForSeconds(totalDuration);
 
         _isOpen = open;
         _isMoving = false;
@@ -311,10 +317,11 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
         if (t == null) yield break;
 
         // Ao fechar, ativa o voxel no início
-        if (!open) t.gameObject.SetActive(true);
+        if (!open)
+            t.gameObject.SetActive(true);
 
         Vector3    startScale   = open ? state.OriginalScale : Vector3.zero;
-        Vector3    endScale     = open ? Vector3.zero : state.OriginalScale;
+        Vector3    endScale     = open ? Vector3.zero        : state.OriginalScale;
         Quaternion startRotation= open ? state.OriginalRotation : t.localRotation; // mantém rotação randômica ao fechar
         Quaternion endRotation  = open ? state.OriginalRotation * Quaternion.Euler(Random.insideUnitSphere * _rotationAmount)
                                        : state.OriginalRotation;
@@ -322,9 +329,12 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
         float elapsed = 0f;
         while (elapsed < _animationDuration)
         {
-            float k = _animationCurve.Evaluate(_animationDuration <= 0f ? 1f : (elapsed / _animationDuration));
-            t.localScale   = Vector3.Lerp(startScale, endScale, k);
+            float k = _animationDuration <= 0f ? 1f : (elapsed / _animationDuration);
+            k = _animationCurve.Evaluate(k);
+
+            t.localScale   = Vector3.Lerp(startScale,   endScale,   k);
             t.localRotation= Quaternion.Slerp(startRotation, endRotation, k);
+
             elapsed += Time.deltaTime;
             yield return null;
         }
@@ -334,7 +344,8 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
         t.localRotation = endRotation;
 
         // Ao abrir, desativa o voxel no final
-        if (open) t.gameObject.SetActive(false);
+        if (open)
+            t.gameObject.SetActive(false);
     }
 
     // ===========================================================
@@ -356,10 +367,10 @@ public class VoxelDoorController : MonoBehaviour, IInteractable
     {
         if (_doorVoxels.Count <= 1) return;
 
-        // Copia para array e ordena com comparador customizado (evita LINQ em plataformas AOT)
+        // Copia para array e ordena com comparador customizado (evita LINQ em AOT)
         var arr = _doorVoxels.ToArray();
-
         System.Comparison<VoxelState> cmp;
+
         switch (_wallSide)
         {
             case WallSide.East:

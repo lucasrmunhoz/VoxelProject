@@ -3,6 +3,8 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
+#region Contracts
+
 /// <summary>
 /// Contrato para obtenção/devolução de instâncias via pool.
 /// Integra com VoxelCache (usa PrefabId para retornar ao "balde" correto).
@@ -11,12 +13,32 @@ public interface IPooledFactory
 {
     Transform Get(int prefabId, Vector3 position, Quaternion rotation, Transform parent = null);
     Transform Get(int prefabId, Transform parent = null);
+
     void Release(Transform instance);
     void ReleaseAllChildren(Transform parent, bool includeInactive = true);
+
     bool ContainsPrefabId(int prefabId);
     int RegisterPrefab(GameObject prefab, int maxPoolSize = 256, int prewarm = 0);
     GameObject GetPrefabById(int prefabId);
 }
+
+/// <summary>
+/// (Opcional) Hooks de ciclo de vida para objetos que desejam ser notificados
+/// durante o fluxo de pool (sem alocações).
+/// </summary>
+public interface IPoolable
+{
+    // Objeto ainda INATIVO, antes de SetActive(true)
+    void OnBeforeSpawn();
+    // Objeto ATIVO, após SetActive(true)
+    void OnAfterSpawn();
+    // Objeto ATIVO, prestes a ser desativado
+    void OnBeforeDespawn();
+    // Objeto INATIVO, após SetActive(false)
+    void OnAfterDespawn();
+}
+
+#endregion
 
 /// <summary>
 /// Pool de objetos por ID de prefab, com bins por-prefab, preaquecer (prewarm),
@@ -54,10 +76,11 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         [Tooltip("Limite máximo de instâncias guardadas em pool (por prefab).")]
         [Min(1)] public int maxPoolSize = 512;
 
-        [HideInInspector] public Transform binRoot;              // pasta no hierarchy
-        [NonSerialized] public Stack<Transform> stack = new();   // LIFO → melhor cache locality
+        [HideInInspector] public Transform binRoot; // pasta no hierarchy
 
-        public override string ToString() => $"[ID:{id}] {prefab?.name ?? "<null>"} (prewarm:{prewarm} max:{maxPoolSize})";
+        [NonSerialized] public Stack<Transform> stack = new(); // LIFO → melhor cache locality
+
+        public override string ToString() => $"[ID:{id}] {prefab?.name ?? ""} (prewarm:{prewarm} max:{maxPoolSize})";
     }
 
     [Header("Tabela de Prefabs")]
@@ -95,6 +118,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
             Destroy(gameObject);
             return;
         }
+
         Instance = this;
         if (dontDestroyOnLoad) DontDestroyOnLoad(gameObject);
 
@@ -123,6 +147,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
                 Debug.LogError("[VoxelPool] Entrada nula ou prefab ausente.");
                 continue;
             }
+
             if (!usedIds.Add(e.id))
             {
                 Debug.LogError($"[VoxelPool] ID duplicado: {e.id} ({e.prefab.name}). Ajuste para IDs únicos.");
@@ -161,13 +186,35 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         }
     }
 
+    /// <summary>
+    /// PR-03: Prewarm sob demanda por PrefabId (para perfis por tipo de sala).
+    /// Retorna a quantidade efetivamente adicionada ao bin (podendo ser menor se atingiu o maxPoolSize).
+    /// </summary>
+    public int Prewarm(int prefabId, int count)
+    {
+        if (count <= 0) return 0;
+        if (!_idToEntry.TryGetValue(prefabId, out var e) || e.prefab == null) return 0;
+
+        int added = 0;
+        for (int i = 0; i < count; i++)
+        {
+            var t = SpawnNewInactive(e);
+            InternalDespawn(t, e);
+            added++;
+            // se estourou e maxPoolSize, InternalDespawn fará trimming
+        }
+        return added;
+    }
+
     // ---------- API pública (IPooledFactory) ----------
     public bool ContainsPrefabId(int prefabId) => _idToEntry.ContainsKey(prefabId);
 
-    public GameObject GetPrefabById(int prefabId)
-        => _idToEntry.TryGetValue(prefabId, out var e) ? e.prefab : null;
+    public GameObject GetPrefabById(int prefabId) =>
+        _idToEntry.TryGetValue(prefabId, out var e) ? e.prefab : null;
 
-    /// <summary>Registra dinamicamente um prefab no pool (retorna o id). Se já existir, retorna o existente.</summary>
+    /// <summary>
+    /// Registra dinamicamente um prefab no pool (retorna o id). Se já existir, retorna o existente.
+    /// </summary>
     public int RegisterPrefab(GameObject prefab, int maxPoolSize = 256, int prewarm = 0)
     {
         if (prefab == null)
@@ -195,7 +242,6 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         binGo.transform.SetParent(binsRoot, false);
         binGo.SetActive(false);
         binGo.hideFlags = HideFlags.DontSave;
-
         entry.binRoot = binGo.transform;
         entry.stack = new Stack<Transform>();
 
@@ -215,8 +261,8 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         return entry.id;
     }
 
-    public Transform Get(int prefabId, Transform parent = null)
-        => Get(prefabId, Vector3.zero, Quaternion.identity, parent);
+    public Transform Get(int prefabId, Transform parent = null) =>
+        Get(prefabId, Vector3.zero, Quaternion.identity, parent);
 
     public Transform Get(int prefabId, Vector3 position, Quaternion rotation, Transform parent = null)
     {
@@ -232,14 +278,14 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         if (parent != null) t.SetParent(parent, false);
         else t.SetParent(null, false);
 
-        t.localPosition = position;          // usa local se parent != null
+        t.localPosition = position;   // usa local se parent != null
         t.localRotation = rotation;
 
         if (forcePrefabLocalScaleOnGet)
             t.localScale = e.prefab.transform.localScale;
 
         // Garante VoxelCache + PrefabId + reset leve de RB (inativo ainda)
-        if (!t.TryGetComponent<VoxelCache>(out var cache))
+        if (!t.TryGetComponent(out VoxelCache cache))
             cache = t.gameObject.AddComponent<VoxelCache>();
         cache.EnsureCached();
         if (cache.PrefabId != e.id) cache.SetPrefabId(e.id);
@@ -282,7 +328,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         int id = -1;
         PrefabEntry e = null;
 
-        if (instance.TryGetComponent<VoxelCache>(out var cache))
+        if (instance.TryGetComponent(out VoxelCache cache))
         {
             id = cache.PrefabId;
             _idToEntry.TryGetValue(id, out e);
@@ -332,7 +378,7 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
         var t = go.transform;
         t.SetParent(e.binRoot, false);
 
-        if (!go.TryGetComponent<VoxelCache>(out var cache))
+        if (!go.TryGetComponent(out VoxelCache cache))
             cache = go.AddComponent<VoxelCache>();
         cache.SetPrefabId(e.id);
         cache.EnsureCached();
@@ -343,13 +389,14 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
     private void InternalDespawn(Transform t, PrefabEntry e)
     {
         if (t == null) return;
-        var go = t.gameObject;
 
+        var go = t.gameObject;
         if (go.activeSelf) go.SetActive(false);
 
         t.SetParent(e.binRoot, false);
         e.stack.Push(t);
 
+        // trimming se exceder maxPoolSize
         while (e.stack.Count > e.maxPoolSize)
         {
             var extra = e.stack.Pop();
@@ -368,12 +415,16 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
 
         for (int i = 0; i < _poolableBuffer.Count; i++)
         {
-            try { call(_poolableBuffer[i]); }
+            try
+            {
+                call(_poolableBuffer[i]);
+            }
             catch (Exception ex)
             {
                 Debug.LogException(ex);
             }
         }
+
         _poolableBuffer.Clear();
     }
 
@@ -382,11 +433,13 @@ public sealed class VoxelPool : MonoBehaviour, IPooledFactory
     {
         Gizmos.color = new Color(0.3f, 0.9f, 1f, 0.6f);
         var p = transform.position;
+
         float y = 0f;
         foreach (var e in prefabs)
         {
             if (e == null || e.prefab == null) continue;
-            var label = $"ID:{e.id} {e.prefab.name}  pool:{(e.stack != null ? e.stack.Count : 0)}/{e.maxPoolSize}";
+
+            var label = $"ID:{e.id} {e.prefab.name} pool:{(e.stack != null ? e.stack.Count : 0)}/{e.maxPoolSize}";
             UnityEditor.Handles.Label(p + Vector3.up * (y += 0.25f), label);
         }
     }

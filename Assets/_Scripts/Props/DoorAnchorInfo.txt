@@ -1,23 +1,14 @@
 // DoorAnchorInfo.cs
+// Guarda dimensões "assadas" de uma abertura de porta em VOXELS para alinhar
+// a próxima sala procedural a partir de uma sala estática criada no Editor.
+
 using System;
 using UnityEngine;
 
-/// <summary>
-/// Guarda as dimensões "assadas" de uma abertura de porta em VOXELS para
-/// alinhar a sala procedural seguinte com a porta de saída do Hub (ou de
-/// qualquer sala estática criada no Editor).
-///
-/// • Anexe este componente ao GameObject "ExitAnchor" criado pela
-///   SimpleRoomEditorWindow (ou a qualquer Empty que marque a abertura).
-/// • Os campos Width/YMin/YMax/OffsetX são dados em VOXELS 1x1x1.
-/// • 'Side' define em qual parede a abertura existe (N/E/S/W) no espaço
-///   LOCAL de 'RoomRoot'.
-/// • O 'RoomRoot' define o frame local (origem/rotação) da sala estática.
-/// • O 'VoxelSize' informa o tamanho mundial de 1 voxel (tipicamente 1f).
-///
-/// Em runtime, o BaseRoomGenerator/GameFlowManager pode ler ToDoorRect()
-/// para construir a porta de entrada da próxima sala com dimensões exatas.
-/// </summary>
+// === Correção mínima PR-02: aliases para os tipos do RoomsData ===
+using WallSide = RoomsData.WallSide;
+using DoorRect = RoomsData.DoorRect;
+
 [DisallowMultipleComponent]
 [AddComponentMenu("Voxel Nightmare/Door Anchor Info")]
 public sealed class DoorAnchorInfo : MonoBehaviour
@@ -69,26 +60,30 @@ public sealed class DoorAnchorInfo : MonoBehaviour
     /// <summary>Altura máxima (inclusive, em voxels).</summary>
     public int YMax => yMax;
 
-    /// <summary>Constrói um DoorRect com os mesmos parâmetros (em VOXELS) para repassar ao gerador.</summary>
+    /// <summary>
+    /// Constrói um DoorRect com os mesmos parâmetros (em VOXELS).
+    /// Use isto para repassar ao gerador procedural.
+    /// </summary>
     public DoorRect ToDoorRect() => new DoorRect(side, offsetX, width, yMin, yMax);
 
     /// <summary>
-    /// Retorna o par (tangente, normal) da parede no ESPAÇO LOCAL de RoomRoot,
-    /// útil para cálculos de visualização/alinhamento.
+    /// Retorna (tangente, normal) para a parede no ESPAÇO LOCAL de RoomRoot.
     /// </summary>
     public static void GetWallBasisLocal(WallSide s, out Vector3 tangent, out Vector3 normal)
     {
         switch (s)
         {
-            case WallSide.North: tangent = Vector3.right;   normal = Vector3.forward; break; // +Z
-            case WallSide.East:  tangent = Vector3.forward; normal = Vector3.right;   break; // +X
-            case WallSide.South: tangent = Vector3.left;    normal = Vector3.back;    break; // -Z
-            case WallSide.West:  tangent = Vector3.back;    normal = Vector3.left;    break; // -X
-            default:             tangent = Vector3.right;   normal = Vector3.forward; break;
+            case WallSide.North: tangent = Vector3.right;  normal = Vector3.forward; break; // +Z
+            case WallSide.East:  tangent = Vector3.forward;normal = Vector3.right;   break; // +X
+            case WallSide.South: tangent = Vector3.left;   normal = Vector3.back;    break; // -Z
+            case WallSide.West:  tangent = Vector3.back;   normal = Vector3.left;    break; // -X
+            default:             tangent = Vector3.right;  normal = Vector3.forward; break;
         }
     }
 
-    /// <summary>Converte a base local (tangente/normal) para o ESPAÇO MUNDIAL, usando RoomRoot.</summary>
+    /// <summary>
+    /// Converte a base local (tangente/normal) para o ESPAÇO MUNDIAL, usando RoomRoot.
+    /// </summary>
     public void GetWallBasisWorld(out Vector3 tangentW, out Vector3 normalW)
     {
         GetWallBasisLocal(side, out var t, out var n);
@@ -97,7 +92,7 @@ public sealed class DoorAnchorInfo : MonoBehaviour
         normalW  = root.TransformDirection(n);
     }
 
-    /// <summary>Retorna o vetor "up" mundial coerente com RoomRoot (ou world up se não houver).</summary>
+    /// <summary>Retorna o vetor "up" mundial coerente com RoomRoot.</summary>
     public Vector3 GetUpWorld()
     {
         var root = RoomRoot;
@@ -115,27 +110,21 @@ public sealed class DoorAnchorInfo : MonoBehaviour
 #if UNITY_EDITOR
     private void OnDrawGizmosSelected()
     {
-        // Desenha um "quadro" da abertura para depuração visual no SceneView.
-        // Assume que este transform marca o CENTRO aproximado da abertura.
+        // Desenha um quadro da abertura (debug visual no SceneView)
         var center = transform.position;
-
         GetWallBasisWorld(out var tangentW, out var normalW);
         var upW = GetUpWorld();
 
         float w = width * voxelSize;
         float h = Height * voxelSize;
-        float thickness = Mathf.Min(0.1f, voxelSize * 0.2f); // só para visual
+        float thickness = Mathf.Min(0.1f, voxelSize * 0.2f); // leve afastamento para evitar z-fighting
 
-        // Construir um retângulo no plano da parede, centrado neste anchor.
-        // Bordas no espaço mundial:
         Vector3 right = tangentW.normalized;
-        Vector3 up    = upW.normalized;
-        Vector3 n     = normalW.normalized;
+        Vector3 up = upW.normalized;
+        Vector3 n = normalW.normalized;
 
         Vector3 halfW = right * (w * 0.5f);
-        Vector3 halfH = up    * (h * 0.5f);
-
-        // Por segurança, desloca um pouco para fora da parede para evitar z-fighting.
+        Vector3 halfH = up * (h * 0.5f);
         Vector3 slightOffset = n * (thickness * 0.5f);
 
         Vector3 p0 = center + (-halfW - halfH) + slightOffset;
@@ -143,18 +132,16 @@ public sealed class DoorAnchorInfo : MonoBehaviour
         Vector3 p2 = center + ( halfW + halfH) + slightOffset;
         Vector3 p3 = center + (-halfW + halfH) + slightOffset;
 
-        // Moldura
         Gizmos.color = Color.cyan;
         Gizmos.DrawLine(p0, p1);
         Gizmos.DrawLine(p1, p2);
         Gizmos.DrawLine(p2, p3);
         Gizmos.DrawLine(p3, p0);
 
-        // Normal da parede
         Gizmos.color = Color.yellow;
         Gizmos.DrawLine(center, center + n * (voxelSize * 1.0f));
 
-        // Texto (Editor only): informações rápidas
+        // Label informativo
         UnityEditor.Handles.color = new Color(0f, 1f, 1f, 0.8f);
         var label = $"DoorAnchorInfo\nSide: {side}\nOffsetX: {offsetX} Width: {width}\nY: {yMin}..{yMax} (H={Height})";
         UnityEditor.Handles.Label(center + up * (h * 0.6f), label);

@@ -1,12 +1,20 @@
+// BedroomGenerator.cs
+// Gera uma sala “Bedroom” simples: estrutura oca (chão + paredes) e popula com props básicos.
+// Mudança mínima p/ PR-02: apenas aliases para tipos de RoomsData.
+// Mantido o restante da lógica exatamente como no original.
+
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+
+// Aliases para o contrato único em RoomsData (evita CS0246/CS0576)
+using RoomPlan     = RoomsData.RoomPlan;
+using RoomInstance = RoomsData.RoomInstance;
 
 [DisallowMultipleComponent]
 public class BedroomGenerator : BaseRoomGenerator
 {
     #region Inspector
-
     [Header("Seed / Random")]
     [Tooltip("0 = aleatória por hora (não determinística).")]
     public int randomSeed = 0;
@@ -19,7 +27,7 @@ public class BedroomGenerator : BaseRoomGenerator
     public struct RoomProp
     {
         public GameObject prefab;
-        public Vector2Int size; // tamanho em grid (X,Z)
+        public Vector2Int size;         // tamanho em grid (X,Z)
 
         [Tooltip("Se verdadeiro, tenta encostar na parede.")]
         public bool placeOnWall;
@@ -33,7 +41,6 @@ public class BedroomGenerator : BaseRoomGenerator
 
     [Header("Bedroom Prop List")]
     [SerializeField] private List<RoomProp> roomProps = new List<RoomProp>();
-
     #endregion
 
     // RNG local para props (separado do Base)
@@ -42,15 +49,12 @@ public class BedroomGenerator : BaseRoomGenerator
     private void Awake()
     {
         // Seed local: mistura do randomSeed com o instanceID (igual ao base da versão RAW)
-        int seed = (randomSeed == 0)
-            ? (Environment.TickCount ^ GetInstanceID())
-            : (randomSeed ^ GetInstanceID());
+        int seed = (randomSeed == 0) ? (Environment.TickCount ^ GetInstanceID()) : (randomSeed ^ GetInstanceID());
         _localRng = new System.Random(seed);
     }
 
     #region GenerateRoom Overloads (Compatíveis)
-    // Mantém assinaturas convenientes e retorna RoomInstance (tipo global)
-
+    // Mantém assinaturas convenientes e retorna RoomInstance (tipo RoomsData)
     public new RoomInstance GenerateRoom() => GenerateRoom(roomOriginGrid, roomSize);
 
     public new RoomInstance GenerateRoom(Vector2Int originGrid)
@@ -62,7 +66,9 @@ public class BedroomGenerator : BaseRoomGenerator
         return GenerateRoom(originGrid, randomSize);
     }
 
+    /// <summary>
     /// Método principal: constrói a casca da sala e popula com props.
+    /// </summary>
     public new RoomInstance GenerateRoom(Vector2Int originGrid, Vector2Int size)
     {
         // 1) Cria container básico via Base (já registra e fornece roots de porta).
@@ -87,7 +93,7 @@ public class BedroomGenerator : BaseRoomGenerator
         );
 
         // Informações auxiliares (streaming/ordenamento)
-        room.builder = this;
+        room.builder   = this;
         room.voxelSize = voxelSize;
 
         // 2) Construir estrutura básica: chão + paredes (sem arestas/quinas internas)
@@ -119,9 +125,9 @@ public class BedroomGenerator : BaseRoomGenerator
         {
             Vector3 worldPos = baseWorld + new Vector3(pos.x * voxelSize, pos.y * voxelSize, pos.z * voxelSize);
             var go = SpawnFromPool(voxelFundamentalPrefab, worldPos, Quaternion.identity, room.root);
-            if (go != null)
-                room.voxels.Add(go);
+            if (go != null) room.voxels.Add(go);
         }
+
         room.built = true;
 
         // 3) Popular com props
@@ -132,7 +138,9 @@ public class BedroomGenerator : BaseRoomGenerator
     }
     #endregion
 
+    /// <summary>
     /// Popula a RoomInstance com props respeitando ocupação e paredes.
+    /// </summary>
     private void PopulateRoomWithProps(RoomInstance room)
     {
         if (room == null || room.root == null) return;
@@ -143,16 +151,16 @@ public class BedroomGenerator : BaseRoomGenerator
 
         // Mapa de ocupação no nível do chão para props
         bool[,] occupied = new bool[w, d];
-        bool[,] isWall = new bool[w, d];
-        bool[,] isDoor = new bool[w, d]; // reservado para futuras integrações com portas reais
+        bool[,] isWall   = new bool[w, d];
+        bool[,] isDoor   = new bool[w, d]; // reservado para futuras integrações com portas reais
 
         // Indexa voxels já gerados para derivar ocupação e paredes (nível Y=0)
         Vector3 baseWorldPos = GridToWorld(room.plan.gridOrigin);
         foreach (var go in room.voxels)
         {
             if (go == null) continue;
-            Vector3 local = go.transform.position - baseWorldPos;
 
+            Vector3 local = go.transform.position - baseWorldPos;
             int gx = Mathf.RoundToInt(local.x / voxelSize);
             int gz = Mathf.RoundToInt(local.z / voxelSize);
             int gy = Mathf.RoundToInt(local.y / voxelSize);
@@ -160,7 +168,6 @@ public class BedroomGenerator : BaseRoomGenerator
             if (gx < 0 || gx >= w || gz < 0 || gz >= d) continue;
 
             if (gy == 0) occupied[gx, gz] = true;
-
             if (gy > 0 && (gx == 0 || gx == w - 1 || gz == 0 || gz == d - 1))
                 isWall[gx, gz] = true;
         }
@@ -196,16 +203,22 @@ public class BedroomGenerator : BaseRoomGenerator
             {
                 int gx = _localRng.Next(1, Math.Max(1, w - aw));
                 int gz = _localRng.Next(1, Math.Max(1, d - ad));
+
                 if (!IsAreaFree(gx, gz, aw, ad)) continue;
                 if (IsNearbyDoor(gx + aw / 2, gz + ad / 2, 2)) continue;
 
                 if (mustBeOnWall)
                 {
-                    if (InBounds(gx - 1, gz) && isWall[gx - 1, gz]) wallRot = Quaternion.LookRotation(Vector3.right);
-                    else if (InBounds(gx + aw, gz) && isWall[gx + aw, gz]) wallRot = Quaternion.LookRotation(Vector3.left);
-                    else if (InBounds(gx, gz - 1) && isWall[gx, gz - 1]) wallRot = Quaternion.LookRotation(Vector3.forward);
-                    else if (InBounds(gx, gz + ad) && isWall[gx, gz + ad]) wallRot = Quaternion.LookRotation(Vector3.back);
-                    else continue; // não encostou em parede
+                    if (InBounds(gx - 1, gz) && isWall[gx - 1, gz])
+                        wallRot = Quaternion.LookRotation(Vector3.right);
+                    else if (InBounds(gx + aw, gz) && isWall[gx + aw, gz])
+                        wallRot = Quaternion.LookRotation(Vector3.left);
+                    else if (InBounds(gx, gz - 1) && isWall[gx, gz - 1])
+                        wallRot = Quaternion.LookRotation(Vector3.forward);
+                    else if (InBounds(gx, gz + ad) && isWall[gx, gz + ad])
+                        wallRot = Quaternion.LookRotation(Vector3.back);
+                    else
+                        continue; // não encostou em parede
                 }
 
                 pos = new Vector2Int(gx, gz);
@@ -219,7 +232,8 @@ public class BedroomGenerator : BaseRoomGenerator
         // Sequência de posicionamento
         foreach (var prop in roomProps)
         {
-            if (prop.prefab == null || _localRng.NextDouble() > prop.placementChance) continue;
+            if (prop.prefab == null || _localRng.NextDouble() > prop.placementChance)
+                continue;
 
             int aw = Math.Max(1, prop.size.x);
             int ad = Math.Max(1, prop.size.y);
@@ -251,8 +265,7 @@ public class BedroomGenerator : BaseRoomGenerator
                 // Marca área ocupada (correção de Z conforme base RAW)
                 for (int ix = found.x; ix < found.x + aw; ix++)
                     for (int iz = found.y; iz < found.y + ad; iz++)
-                        if (InBounds(ix, iz))
-                            occupied[ix, iz] = true;
+                        if (InBounds(ix, iz)) occupied[ix, iz] = true;
             }
         }
 
